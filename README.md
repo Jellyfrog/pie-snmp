@@ -8,6 +8,12 @@ It includes the PHP 8.6 SNMP improvements: the `Snmp\OidOutput`,
 `snmp_set_output_option()`, `snmp_set_mib_option()`, `snmp_init_mib()`,
 AES-192/256 (including the Cisco variants) and the extra output properties.
 
+It also adds the following, which upstream does not have:
+
+| Feature | API |
+|---|---|
+| Turn off GETBULK in walks (GETNEXT is used instead) | `SNMP::$use_bulk` (default `true`) |
+
 SNMPv3 algorithms (`setSecurity()`, `snmp3_*()`):
 
 | | |

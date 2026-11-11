@@ -94,6 +94,8 @@ object(SNMP)#%d (%d) {
   NULL
   ["oid_increasing_check"]=>
   bool(true)
+  ["use_bulk"]=>
+  bool(true)
   ["quick_print"]=>
   bool(false)
   ["enum_print"]=>
@@ -131,6 +133,8 @@ object(SNMP)#%d (%d) {
   int(40)
   ["oid_increasing_check"]=>
   bool(false)
+  ["use_bulk"]=>
+  bool(true)
   ["quick_print"]=>
   bool(true)
   ["enum_print"]=>
@@ -167,6 +171,8 @@ object(SNMP)#%d (%d) {
   ["max_oids"]=>
   int(40)
   ["oid_increasing_check"]=>
+  bool(true)
+  ["use_bulk"]=>
   bool(true)
   ["quick_print"]=>
   bool(true)
@@ -209,6 +215,8 @@ object(SNMP)#%d (%d) {
   ["max_oids"]=>
   int(40)
   ["oid_increasing_check"]=>
+  bool(true)
+  ["use_bulk"]=>
   bool(true)
   ["quick_print"]=>
   bool(true)

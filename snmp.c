@@ -126,6 +126,7 @@ struct objid_query {
 	int valueretrieval;
 	bool array_output;
 	bool oid_increasing_check;
+	bool use_bulk;
 	snmpobjarg *vars;
 };
 
@@ -426,7 +427,7 @@ static void php_snmp_internal(INTERNAL_FUNCTION_PARAMETERS, int st,
 	while (keepwalking) {
 		keepwalking = false;
 		if (st & SNMP_CMD_WALK) {
-			if (session->version == SNMP_VERSION_1) {
+			if (session->version == SNMP_VERSION_1 || !objid_query->use_bulk) {
 				pdu = snmp_pdu_create(SNMP_MSG_GETNEXT);
 			} else {
 				pdu = snmp_pdu_create(SNMP_MSG_GETBULK);
@@ -578,7 +579,7 @@ retry:
 					keepwalking = true;
 				}
 			} else {
-				if (st & SNMP_CMD_WALK && response->errstat == SNMP_ERR_TOOBIG && objid_query->max_repetitions > 1) { /* Answer will not fit into single packet */
+				if (st & SNMP_CMD_WALK && objid_query->use_bulk && session->version != SNMP_VERSION_1 && response->errstat == SNMP_ERR_TOOBIG && objid_query->max_repetitions > 1) { /* Answer will not fit into single packet */
 					objid_query->max_repetitions /= 2;
 					snmp_free_pdu(response);
 					keepwalking = true;
@@ -1329,6 +1330,7 @@ static void php_snmp(INTERNAL_FUNCTION_PARAMETERS, int st, int version)
 	objid_query.non_repeaters = 0;
 	objid_query.valueretrieval = SNMP_G(valueretrieval);
 	objid_query.oid_increasing_check = true;
+	objid_query.use_bulk = true;
 
 	if (session_less_mode) {
 		if (version == SNMP_VERSION_3) {
@@ -1482,6 +1484,7 @@ static void php_snmp(INTERNAL_FUNCTION_PARAMETERS, int st, int version)
 			}
 		}
 		objid_query.oid_increasing_check = snmp_object->oid_increasing_check;
+		objid_query.use_bulk = snmp_object->use_bulk;
 		objid_query.valueretrieval = snmp_object->valueretrieval;
 
 		// Save the global snmplib output options and set the options to those defined by the object instance
@@ -1903,6 +1906,7 @@ PHP_METHOD(SNMP, __construct)
 	snmp_object->valueretrieval = SNMP_G(valueretrieval);
 	save_snmplib_output_options(snmp_object);
 	snmp_object->oid_increasing_check = true;
+	snmp_object->use_bulk = true;
 	snmp_object->exceptions_enabled = 0;
 }
 /* }}} */
@@ -2306,6 +2310,7 @@ static zend_result php_snmp_read_oid_output_format(php_snmp_object *snmp_object,
 	}
 
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(oid_increasing_check)
+PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(use_bulk)
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(quick_print)
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(enum_print)
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(numeric_index)
@@ -2377,6 +2382,7 @@ static zend_result php_snmp_write_##name(php_snmp_object *snmp_object, zval *new
 }
 
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(oid_increasing_check)
+PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(use_bulk)
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(quick_print)
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(enum_print)
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(numeric_index)
@@ -2442,6 +2448,7 @@ const php_snmp_prop_handler php_snmp_property_entries[] = {
 	PHP_SNMP_READONLY_PROPERTY_ENTRY_RECORD(info),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(max_oids),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(oid_increasing_check),
+	PHP_SNMP_PROPERTY_ENTRY_RECORD(use_bulk),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(quick_print),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(enum_print),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(numeric_index),
