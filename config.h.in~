@@ -18,9 +18,17 @@
 /* Define to 1 if the PHP extension 'snmp' is available. */
 #undef HAVE_SNMP
 
+/* Define to 1 if SNMP library has the 'usmHMAC128SHA224AuthProtocol' array.
+   */
+#undef HAVE_SNMP_SHA224
+
 /* Define to 1 if SNMP library has the 'usmHMAC192SHA256AuthProtocol' array.
    */
 #undef HAVE_SNMP_SHA256
+
+/* Define to 1 if SNMP library has the 'usmHMAC256SHA384AuthProtocol' array.
+   */
+#undef HAVE_SNMP_SHA384
 
 /* Define to 1 if SNMP library has the 'usmHMAC384SHA512AuthProtocol' array.
    */

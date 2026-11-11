@@ -4,7 +4,8 @@ PHP_ARG_WITH([snmp],
     [Include SNMP support. Use PKG_CONFIG_PATH (or SNMP_CFLAGS and SNMP_LIBS)
     environment variables, or alternatively the optional DIR argument to
     customize where to look for the net-snmp-config utility of the NET-SNMP
-    library.])])
+    library.])],
+  [yes])
 
 if test "$PHP_SNMP" != "no"; then
   snmp_found=no
