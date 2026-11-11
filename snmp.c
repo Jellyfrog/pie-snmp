@@ -883,6 +883,7 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 	php_snmp_session *session;
 	char *pptr, *host_ptr;
 	bool force_ipv6 = false;
+	bool use_tcp = false;
 	int n;
 	struct sockaddr **psal;
 	struct sockaddr **res;
@@ -931,6 +932,21 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 	memcpy(session->peername, ZSTR_VAL(hostname), ZSTR_LEN(hostname) + 1);
 	host_ptr = session->peername;
 
+	/* Optional transport prefix: udp:, udp6:, tcp: or tcp6: */
+	if (strncasecmp(host_ptr, "udp:", sizeof("udp:") - 1) == 0) {
+		host_ptr += sizeof("udp:") - 1;
+	} else if (strncasecmp(host_ptr, "udp6:", sizeof("udp6:") - 1) == 0) {
+		host_ptr += sizeof("udp6:") - 1;
+		force_ipv6 = true;
+	} else if (strncasecmp(host_ptr, "tcp:", sizeof("tcp:") - 1) == 0) {
+		host_ptr += sizeof("tcp:") - 1;
+		use_tcp = true;
+	} else if (strncasecmp(host_ptr, "tcp6:", sizeof("tcp6:") - 1) == 0) {
+		host_ptr += sizeof("tcp6:") - 1;
+		use_tcp = true;
+		force_ipv6 = true;
+	}
+
 	/* Reading the hostname and its optional non-default port number */
 	if (*host_ptr == '[') { /* IPv6 address */
 		force_ipv6 = true;
@@ -965,7 +981,7 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 
 	/* since Net-SNMP library requires 'udp6:' prefix for all IPv6 addresses (in FQDN form too) we need to
 	   perform possible name resolution before running any SNMP queries */
-	if ((n = php_network_getaddresses(host_ptr, SOCK_DGRAM, &psal, NULL)) == 0) { /* some resolver error */
+	if ((n = php_network_getaddresses(host_ptr, use_tcp ? SOCK_STREAM : SOCK_DGRAM, &psal, NULL)) == 0) { /* some resolver error */
 		/* warnings sent, bailing out */
 		return false;
 	}
@@ -981,11 +997,15 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 			continue;
 		}
 		if ((*res)->sa_family == AF_INET6) {
-			strcpy(session->peername, "udp6:[");
+			strcpy(session->peername, use_tcp ? "tcp6:[" : "udp6:[");
 			pptr = session->peername + strlen(session->peername);
 			inet_ntop((*res)->sa_family, &(((struct sockaddr_in6*)(*res))->sin6_addr), pptr, MAX_NAME_LEN);
 			strcat(pptr, "]");
 		} else if ((*res)->sa_family == AF_INET) {
+			if (use_tcp) {
+				strcpy(session->peername, "tcp:");
+				pptr = session->peername + strlen(session->peername);
+			}
 			inet_ntop((*res)->sa_family, &(((struct sockaddr_in*)(*res))->sin_addr), pptr, MAX_NAME_LEN);
 		} else {
 			res++;
