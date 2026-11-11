@@ -70,6 +70,16 @@ if test "$PHP_SNMP" != "no"; then
   CFLAGS="$CFLAGS $SNMP_CFLAGS"
   LIBS="$LIBS $SNMP_LIBS"
 
+  AC_CHECK_DECL([usmHMAC128SHA224AuthProtocol],
+    [AC_DEFINE([HAVE_SNMP_SHA224], [1],
+      [Define to 1 if SNMP library has the 'usmHMAC128SHA224AuthProtocol'
+      array.])],
+    [],
+    [
+      #include <net-snmp/net-snmp-config.h>
+      #include <net-snmp/net-snmp-includes.h>
+    ])
+
   AC_CHECK_DECL([usmHMAC192SHA256AuthProtocol],
     [AC_DEFINE([HAVE_SNMP_SHA256], [1],
       [Define to 1 if SNMP library has the 'usmHMAC192SHA256AuthProtocol'
@@ -83,6 +93,16 @@ if test "$PHP_SNMP" != "no"; then
   AC_CHECK_DECL([usmHMAC384SHA512AuthProtocol],
     [AC_DEFINE([HAVE_SNMP_SHA512], [1],
       [Define to 1 if SNMP library has the 'usmHMAC384SHA512AuthProtocol'
+      array.])],
+    [],
+    [
+      #include <net-snmp/net-snmp-config.h>
+      #include <net-snmp/net-snmp-includes.h>
+    ])
+
+  AC_CHECK_DECL([usmHMAC256SHA384AuthProtocol],
+    [AC_DEFINE([HAVE_SNMP_SHA384], [1],
+      [Define to 1 if SNMP library has the 'usmHMAC256SHA384AuthProtocol'
       array.])],
     [],
     [

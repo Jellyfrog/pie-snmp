@@ -1031,10 +1031,26 @@ static ZEND_ATTRIBUTE_NONNULL bool snmp_session_set_auth_protocol(struct snmp_se
 		return true;
 	}
 
+#ifdef HAVE_SNMP_SHA224
+	if (zend_string_equals_literal_ci(prot, "SHA224")) {
+		s->securityAuthProto = usmHMAC128SHA224AuthProtocol;
+		s->securityAuthProtoLen = sizeof(usmHMAC128SHA224AuthProtocol) / sizeof(oid);
+		return true;
+	}
+#endif
+
 #ifdef HAVE_SNMP_SHA256
 	if (zend_string_equals_literal_ci(prot, "SHA256")) {
 		s->securityAuthProto = usmHMAC192SHA256AuthProtocol;
 		s->securityAuthProtoLen = sizeof(usmHMAC192SHA256AuthProtocol) / sizeof(oid);
+		return true;
+	}
+#endif
+
+#ifdef HAVE_SNMP_SHA384
+	if (zend_string_equals_literal_ci(prot, "SHA384")) {
+		s->securityAuthProto = usmHMAC256SHA384AuthProtocol;
+		s->securityAuthProtoLen = sizeof(usmHMAC256SHA384AuthProtocol) / sizeof(oid);
 		return true;
 	}
 #endif
@@ -1049,8 +1065,14 @@ static ZEND_ATTRIBUTE_NONNULL bool snmp_session_set_auth_protocol(struct snmp_se
 
 	zend_value_error(
 		"Authentication protocol must be \"SHA\""
+#ifdef HAVE_SNMP_SHA224
+		" or \"SHA224\""
+#endif
 #ifdef HAVE_SNMP_SHA256
 		" or \"SHA256\""
+#endif
+#ifdef HAVE_SNMP_SHA384
+		" or \"SHA384\""
 #endif
 #ifdef HAVE_SNMP_SHA512
 		" or \"SHA512\""
