@@ -54,14 +54,16 @@ SNMP_PORT=1161 NO_INTERACTION=1 make test TESTS=tests/
 
 ## Known issues
 
-These come from upstream and Net-SNMP, not from this fork's changes.
-
-- Reusing one `SNMP` object for a second request can fail with "Could not
-  open snmp connection ... (Address already in use)". The same happens with
-  stock PHP 8.5 and Net-SNMP 5.9.5.2. Because of it, `snmp-object.phpt` and
-  `snmp-object-errno-errstr.phpt` fail.
+- **TCP connect ignores the SNMP timeout.** Net-SNMP's TCP transport calls a
+  blocking `connect()`. For an unreachable host, the first request on Linux
+  waits for the kernel's SYN retries, about 2 minutes, whatever `$timeout` is
+  set to. Refused connections fail immediately.
 - Net-SNMP caches USM users per process. If one security name is used with
   different security parameters in the same process, later requests may use
   the cached keys.
-- snmpd's `rocommunity6` does not match `tcp6:` clients, so SNMPv1/v2c over
-  TCP/IPv6 to snmpd needs a `com2sec6`/`group` setup. SNMPv3 works.
+- Against Net-SNMP 5.9.5 snmpd with `tests/snmpd.conf`, SNMPv2c over
+  `tcp6:` times out while SNMPv3 over `tcp6:` works. The same happens with
+  the `snmpget` CLI, so the cause is on the agent side.
+
+This build also works around a Net-SNMP 5.9.5 bug (net-snmp issue #1055)
+that broke the second request on a reused `SNMP` object.
