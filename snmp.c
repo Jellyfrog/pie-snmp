@@ -445,6 +445,12 @@ static void php_snmp_internal(INTERNAL_FUNCTION_PARAMETERS, int st,
 		objid_query->offset = objid_query->count;
 	}
 
+	/* Net-SNMP versions with commit ed917bfdb0e0 but without 6a16c2df1 (e.g.
+	 * 5.9.5) store the client's ephemeral port in session->local_port, which
+	 * makes the next snmp_open() bind to the peer address as a server. The
+	 * extension never sets a local port, so always clear it. */
+	session->local_port = 0;
+
 	if ((ss = snmp_open(session)) == NULL) {
 		snmp_error(session, NULL, NULL, &err);
 		php_error_docref(NULL, E_WARNING, "Could not open snmp connection: %s", err);
