@@ -227,6 +227,7 @@ namespace
         public array $info;
         public ?int $max_oids;
         public bool $oid_increasing_check;
+        public bool $use_bulk;
         public bool $quick_print;
         public bool $enum_print;
         public bool $numeric_index;

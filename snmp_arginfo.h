@@ -1,5 +1,5 @@
 /* This is a generated file, edit snmp.stub.php instead.
- * Stub hash: 9a32b308176289c1b1475524372a69257f464bd4
+ * Stub hash: 8d69fbd236cd1fd2cb333ad76dc2e27410f13c1a
  * Has decl header: yes */
 
 #include "zend_attributes.h"
@@ -443,6 +443,12 @@ static zend_class_entry *register_class_SNMP(void)
 	zend_string *property_oid_increasing_check_name = zend_string_init("oid_increasing_check", sizeof("oid_increasing_check") - 1, true);
 	zend_declare_typed_property(class_entry, property_oid_increasing_check_name, &property_oid_increasing_check_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_BOOL));
 	zend_string_release_ex(property_oid_increasing_check_name, true);
+
+	zval property_use_bulk_default_value;
+	ZVAL_UNDEF(&property_use_bulk_default_value);
+	zend_string *property_use_bulk_name = zend_string_init("use_bulk", sizeof("use_bulk") - 1, true);
+	zend_declare_typed_property(class_entry, property_use_bulk_name, &property_use_bulk_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_BOOL));
+	zend_string_release_ex(property_use_bulk_name, true);
 
 	zval property_quick_print_default_value;
 	ZVAL_UNDEF(&property_quick_print_default_value);
