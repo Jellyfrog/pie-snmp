@@ -81,3 +81,6 @@ SNMP_PORT=1161 NO_INTERACTION=1 make test TESTS=tests/
 - Net-SNMP caches USM users per process. If one security name is used with
   different security parameters in the same process, later requests may use
   the cached keys.
+
+This build also works around a Net-SNMP 5.9.5 bug (net-snmp issue #1055)
+that broke the second request on a reused `SNMP` object.
