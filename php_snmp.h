@@ -20,7 +20,7 @@
 #ifndef PHP_SNMP_H
 #define PHP_SNMP_H
 
-#define PHP_SNMP_VERSION PHP_VERSION
+#define PHP_SNMP_VERSION "1.0.0"
 
 #ifdef HAVE_SNMP
 
