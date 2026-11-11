@@ -38,6 +38,8 @@ extern zend_module_entry snmp_module_entry;
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-includes.h>
 
+#include "php_snmp_compat.h"
+
 PHP_MINIT_FUNCTION(snmp);
 PHP_MSHUTDOWN_FUNCTION(snmp);
 PHP_MINFO_FUNCTION(snmp);
