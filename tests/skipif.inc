@@ -1,6 +1,6 @@
 <?php
 require_once (dirname(__FILE__).'/snmp_include.inc');
-require_once dirname(__DIR__, 3) . '/tests/probe_cache.inc';
+require_once __DIR__ . '/probe_cache.inc';
 
 //test server is available
 // this require snmpget to work ...
