@@ -236,6 +236,7 @@ namespace
         public bool $dont_print_units;
         public bool $escape_quotes;
         public bool $print_hex_text;
+        public bool $no_display_hint;
         public int $valueretrieval;
         public int $oid_output_format;
         public int $exceptions_enabled;
@@ -309,6 +310,7 @@ namespace Snmp {
         case HexText;
         case DontPrintUnits;
         case ExtendedIndex;
+        case NoDisplayHint;
     }
 
     enum StringOutput

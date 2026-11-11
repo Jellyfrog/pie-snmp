@@ -56,6 +56,7 @@ typedef struct _php_snmp_object {
 	bool dont_print_units;
 	bool escape_quotes;
 	bool print_hex_text;
+	bool no_display_hint;
 	int string_output_format;
 	int oid_output_format;
 	int snmp_errno;

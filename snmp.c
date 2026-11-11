@@ -238,6 +238,38 @@ static void php_snmp_error(zval *object, int type, const char *format, ...)
 
 /* }}} */
 
+/* {{{ php_snmp_snprint_value
+ *
+ * snprint_value() wrapper that honours NETSNMP_DS_LIB_NO_DISPLAY_HINT.
+ * Net-SNMP only checks that option in sprint_realloc_variable(), not in
+ * sprint_realloc_value(), so mirror the latter without the hint. */
+static int php_snmp_snprint_value(char *buf, size_t buf_len, const oid *objid, size_t objidlen, const netsnmp_variable_list *variable)
+{
+#ifndef NETSNMP_DISABLE_MIB_LOADING
+	if (netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_NO_DISPLAY_HINT)
+			&& variable->type != SNMP_NOSUCHOBJECT
+			&& variable->type != SNMP_NOSUCHINSTANCE
+			&& variable->type != SNMP_ENDOFMIBVIEW) {
+		struct tree *subtree = get_tree(objid, objidlen, get_tree_head());
+		size_t out_len = 0;
+		const char *units = NULL;
+		int ok;
+
+		if (subtree && !netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_DONT_PRINT_UNITS)) {
+			units = subtree->units;
+		}
+		if (subtree && subtree->printomat) {
+			ok = (*subtree->printomat)((u_char **) &buf, &buf_len, &out_len, 0, variable, subtree->enums, NULL, units);
+		} else {
+			ok = sprint_realloc_by_type((u_char **) &buf, &buf_len, &out_len, 0, variable, subtree ? subtree->enums : NULL, NULL, units);
+		}
+		return ok ? (int) out_len : -1;
+	}
+#endif
+	return snprint_value(buf, buf_len, objid, objidlen, variable);
+}
+/* }}} */
+
 /* {{{ php_snmp_getvalue
 *
 * SNMP value to zval converter
@@ -259,7 +291,7 @@ static void php_snmp_getvalue(struct variable_list *vars, zval *snmpval, int val
 	 */
 	while ((valueretrieval & SNMP_VALUE_PLAIN) == 0) {
 		*buf = '\0';
-		if (snprint_value(buf, buflen, vars->name, vars->name_length, vars) == -1) {
+		if (php_snmp_snprint_value(buf, buflen, vars->name, vars->name_length, vars) == -1) {
 			if (val_len > 512*1024) {
 				php_error_docref(NULL, E_WARNING, "snprint_value() asks for a buffer more than 512k, Net-SNMP bug?");
 				break;
@@ -1299,6 +1331,7 @@ static void save_snmplib_output_options(php_snmp_object *snmp_object)
 	snmp_object->dont_print_units = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_DONT_PRINT_UNITS);
 	snmp_object->escape_quotes = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_ESCAPE_QUOTES);
 	snmp_object->print_hex_text = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_PRINT_HEX_TEXT);
+	snmp_object->no_display_hint = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_NO_DISPLAY_HINT);
 	// Integers
 	snmp_object->string_output_format = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_STRING_OUTPUT_FORMAT);
 	snmp_object->oid_output_format = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_OID_OUTPUT_FORMAT);
@@ -1317,6 +1350,7 @@ static void set_snmplib_output_options(php_snmp_object *snmp_object)
 	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_DONT_PRINT_UNITS, snmp_object->dont_print_units);
 	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_ESCAPE_QUOTES, snmp_object->escape_quotes);
 	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_PRINT_HEX_TEXT, snmp_object->print_hex_text);
+	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_NO_DISPLAY_HINT, snmp_object->no_display_hint);
 	// Integers
 	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_STRING_OUTPUT_FORMAT, snmp_object->string_output_format);
 	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_OID_OUTPUT_FORMAT, snmp_object->oid_output_format);
@@ -1695,6 +1729,9 @@ PHP_FUNCTION(snmp_set_output_option)
 			break;
 		case ZEND_ENUM_Snmp_Output_ExtendedIndex:
 			snmp_opt = NETSNMP_DS_LIB_EXTENDED_INDEX;
+			break;
+		case ZEND_ENUM_Snmp_Output_NoDisplayHint:
+			snmp_opt = NETSNMP_DS_LIB_NO_DISPLAY_HINT;
 			break;
 		default:
 			ZEND_UNREACHABLE();
@@ -2341,6 +2378,7 @@ PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(extended_index)
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(dont_print_units)
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(escape_quotes)
 PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(print_hex_text)
+PHP_SNMP_BOOL_PROPERTY_READER_FUNCTION(no_display_hint)
 
 #define PHP_SNMP_LONG_PROPERTY_READER_FUNCTION(name) \
 	static zend_result php_snmp_read_##name(php_snmp_object *snmp_object, zval *retval) \
@@ -2413,6 +2451,7 @@ PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(extended_index)
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(dont_print_units)
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(escape_quotes)
 PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(print_hex_text)
+PHP_SNMP_BOOL_PROPERTY_WRITER_FUNCTION(no_display_hint)
 
 /* {{{ */
 static zend_result php_snmp_write_oid_output_format(php_snmp_object *snmp_object, zval *newval)
@@ -2479,6 +2518,7 @@ const php_snmp_prop_handler php_snmp_property_entries[] = {
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(dont_print_units),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(escape_quotes),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(print_hex_text),
+	PHP_SNMP_PROPERTY_ENTRY_RECORD(no_display_hint),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(valueretrieval),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(oid_output_format),
 	PHP_SNMP_PROPERTY_ENTRY_RECORD(exceptions_enabled),

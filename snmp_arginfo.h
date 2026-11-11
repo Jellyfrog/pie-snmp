@@ -1,5 +1,5 @@
 /* This is a generated file, edit snmp.stub.php instead.
- * Stub hash: 8d69fbd236cd1fd2cb333ad76dc2e27410f13c1a
+ * Stub hash: 31a2d2d25fafb9c20f27d8017ccb60ce2e5f36f0
  * Has decl header: yes */
 
 #include "zend_attributes.h"
@@ -498,6 +498,12 @@ static zend_class_entry *register_class_SNMP(void)
 	zend_declare_typed_property(class_entry, property_print_hex_text_name, &property_print_hex_text_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_BOOL));
 	zend_string_release_ex(property_print_hex_text_name, true);
 
+	zval property_no_display_hint_default_value;
+	ZVAL_UNDEF(&property_no_display_hint_default_value);
+	zend_string *property_no_display_hint_name = zend_string_init("no_display_hint", sizeof("no_display_hint") - 1, true);
+	zend_declare_typed_property(class_entry, property_no_display_hint_name, &property_no_display_hint_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_BOOL));
+	zend_string_release_ex(property_no_display_hint_name, true);
+
 	zval property_valueretrieval_default_value;
 	ZVAL_UNDEF(&property_valueretrieval_default_value);
 	zend_string *property_valueretrieval_name = zend_string_init("valueretrieval", sizeof("valueretrieval") - 1, true);
@@ -587,6 +593,8 @@ static zend_class_entry *register_class_Snmp_Output(void)
 	zend_enum_add_case_cstr(class_entry, "DontPrintUnits", NULL);
 
 	zend_enum_add_case_cstr(class_entry, "ExtendedIndex", NULL);
+
+	zend_enum_add_case_cstr(class_entry, "NoDisplayHint", NULL);
 
 	return class_entry;
 }
