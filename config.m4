@@ -17,7 +17,16 @@ if test "$PHP_SNMP" != "no"; then
 
   SNMP_DIR="$abs_builddir/netsnmp-build"
   SNMP_CFLAGS="-I$SNMP_DIR/include"
-  SNMP_LIBS="$SNMP_DIR/snmplib/.libs/libnetsnmp.a $($SHELL "$SNMP_DIR/net-snmp-config" --external-libs)"
+  SNMP_LIBS="$SNMP_DIR/lib/libnetsnmp.a $($SHELL "$SNMP_DIR/net-snmp-config" --external-libs)"
+  dnl Relink snmp.so when the bundled library is rebuilt.
+  SNMP_SHARED_DEPENDENCIES="$SNMP_DIR/lib/libnetsnmp.a"
+  PHP_SUBST([SNMP_SHARED_DEPENDENCIES])
+  SNMP_BUILD_SCRIPT="$abs_srcdir/scripts/build-netsnmp.sh"
+  SNMP_BUILD_SRCDIR="$abs_srcdir"
+  SNMP_BUILD_DIR="$abs_builddir"
+  PHP_SUBST([SNMP_BUILD_SCRIPT])
+  PHP_SUBST([SNMP_BUILD_SRCDIR])
+  PHP_SUBST([SNMP_BUILD_DIR])
 
   PHP_EVAL_INCLINE([$SNMP_CFLAGS])
   SNMP_SHARED_LIBADD="$SNMP_LIBS"
@@ -66,5 +75,6 @@ if test "$PHP_SNMP" != "no"; then
 
   PHP_NEW_EXTENSION([snmp], [snmp.c], [$ext_shared])
   PHP_ADD_EXTENSION_DEP(snmp, spl)
+  PHP_ADD_MAKEFILE_FRAGMENT
   PHP_SUBST([SNMP_SHARED_LIBADD])
 fi

@@ -35,7 +35,7 @@ fingerprint=$(
 )
 
 if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$fingerprint" ] \
-    && [ -f "$out/snmplib/.libs/libnetsnmp.a" ]; then
+    && [ -f "$out/lib/libnetsnmp.a" ]; then
     echo "bundled net-snmp is up to date"
     exit 0
 fi
@@ -89,6 +89,10 @@ CFLAGS="${NETSNMP_CFLAGS:--O2 -g} -fPIC" ./configure \
 
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 make -C snmplib -j"$jobs" > make.out 2>&1 || { tail -50 make.out >&2; exit 1; }
+
+# Copy the library out of .libs/: PHP's "make clean" deletes every .libs dir.
+mkdir -p lib
+cp snmplib/.libs/libnetsnmp.a lib/libnetsnmp.a
 
 echo "$fingerprint" > "$stamp"
 echo "built bundled net-snmp in $out"
