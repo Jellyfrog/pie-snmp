@@ -42,8 +42,15 @@ Debian `php8.5-snmp`), remove that package or disable its ini file first.
 
 ```sh
 pie repository:add vcs https://github.com/jellyfrog/pie-snmp
-pie install jellyfrog/snmp:dev-main
+pie install jellyfrog/snmp
 ```
+
+PIE installs from the release assets: a prebuilt `snmp.so` for Linux
+(x86_64/arm64, glibc, NTS/ZTS) when one matches, otherwise the source
+package `php_snmp-<version>-src.tgz`, which includes the Net-SNMP submodule
+(GitHub's own source archives do not). The assets are built by
+`.github/workflows/release.yml` when a tag is pushed. Unreleased versions
+(`dev-main`) cannot be installed with PIE; build them manually.
 
 Manual build:
 
