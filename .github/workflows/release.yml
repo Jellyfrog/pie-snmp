@@ -36,12 +36,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+        run: sudo apt update && sudo apt install -y --no-install-recommends libssl-dev
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -51,7 +51,7 @@ jobs:
           phpts: ${{ matrix.ts }}
 
       - name: Build and add to the release
-        uses: php/pie-ext-binary-builder@0.0.2
+        uses: php/pie-ext-binary-builder@0.0.4
         with:
           release-tag: ${{ github.ref_name }}
           create-release: 'true'
@@ -67,7 +67,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
