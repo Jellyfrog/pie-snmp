@@ -1,22 +1,20 @@
 {
     "name": "jellyfrog/snmp",
-    "description": "PHP SNMP extension (ext/snmp from php-src master) for PHP 8.5+, with TCP transport, SHA-224/384, a bulk-walk toggle and an option to skip display hints",
+    "description": "PHP SNMP extension for PHP 8.5+ (ext/snmp from php-src master) with a bundled, statically linked Net-SNMP, a cache of parsed MIBs, snmp_translate(), module lists for snmp_init_mib(), TCP transport and SHA-224/384",
     "type": "php-ext",
     "license": "BSD-3-Clause",
-    "keywords": ["snmp", "net-snmp", "extension"],
+    "keywords": [
+        "snmp",
+        "net-snmp",
+        "mib",
+        "extension"
+    ],
     "require": {
         "php": ">=8.5"
     },
     "php-ext": {
         "extension-name": "snmp",
         "support-zts": true,
-        "support-nts": true,
-        "configure-options": [
-            {
-                "name": "with-snmp",
-                "description": "Path to the Net-SNMP installation prefix (directory containing bin/net-snmp-config)",
-                "needs-value": true
-            }
-        ]
+        "support-nts": true
     }
 }
