@@ -1,8 +1,8 @@
 /* This is a generated file, edit snmp.stub.php instead.
- * Stub hash: 9b7513711d98f9af8936238ea19bb0c90b936904 */
+ * Stub hash: 2d3e5bd2dcff2242435ae05ab536e9d45648aacf */
 
-#ifndef ZEND_SNMP_DECL_9b7513711d98f9af8936238ea19bb0c90b936904_H
-#define ZEND_SNMP_DECL_9b7513711d98f9af8936238ea19bb0c90b936904_H
+#ifndef ZEND_SNMP_DECL_2d3e5bd2dcff2242435ae05ab536e9d45648aacf_H
+#define ZEND_SNMP_DECL_2d3e5bd2dcff2242435ae05ab536e9d45648aacf_H
 
 typedef enum zend_enum_Snmp_Mib {
 	ZEND_ENUM_Snmp_Mib_AllowUnderscores = 1,
@@ -37,4 +37,4 @@ typedef enum zend_enum_Snmp_StringOutput {
 	ZEND_ENUM_Snmp_StringOutput_Hex = 3,
 } zend_enum_Snmp_StringOutput;
 
-#endif /* ZEND_SNMP_DECL_9b7513711d98f9af8936238ea19bb0c90b936904_H */
+#endif /* ZEND_SNMP_DECL_2d3e5bd2dcff2242435ae05ab536e9d45648aacf_H */

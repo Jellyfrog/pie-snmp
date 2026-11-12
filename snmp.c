@@ -23,6 +23,7 @@
 
 #include "php.h"
 #include "Zend/zend_enum.h"
+#include "Zend/zend_smart_str.h"
 #include "main/php_network.h"
 #include "ext/standard/info.h"
 
@@ -101,19 +102,50 @@ static bool mib_needs_reset;
  * load the extension but never use SNMP do not pay for parsing the MIBs. */
 static bool mib_tree_loaded;
 
-/* Build the default MIB tree (MIBS/MIBDIRS/MIBFILES, snmp.conf) if not done yet. */
-static void php_snmp_load_mib_tree(void)
+static void php_snmp_setenv(const char *name, const char *value)
 {
-	if (mib_tree_loaded) {
-		return;
+#ifdef PHP_WIN32
+	_putenv_s(name, value ? value : "");
+#else
+	if (value) {
+		setenv(name, value, 1);
+	} else {
+		unsetenv(name);
 	}
+#endif
+}
+
+/* Build a new MIB tree. mibs is the list of modules to load, like the MIBS
+ * environment variable or the -m option of the command line tools; NULL loads
+ * the default list (MIBS, snmp.conf, or the built-in list). */
+static void php_snmp_build_mib_tree(const char *mibs)
+{
+	char *saved = NULL;
+
 	shutdown_mib();
+	if (mibs) {
+		const char *env = getenv("MIBS");
+		saved = env ? strdup(env) : NULL;
+		php_snmp_setenv("MIBS", mibs);
+	}
 #ifdef HAVE_NETSNMP_INIT_MIB
 	netsnmp_init_mib();
 #else
 	init_mib();
 #endif
+	if (mibs) {
+		php_snmp_setenv("MIBS", saved);
+		free(saved);
+	}
 	mib_tree_loaded = true;
+}
+
+/* Build the default MIB tree (MIBS/MIBDIRS/MIBFILES, snmp.conf) if not done yet. */
+static void php_snmp_load_mib_tree(void)
+{
+	if (!mib_tree_loaded) {
+		php_snmp_build_mib_tree(NULL);
+	}
 }
 static php_snmp_object saved_snmp_settings;
 static int saved_mib_allow_underscores;
@@ -2055,29 +2087,52 @@ PHP_FUNCTION(snmp_read_mib)
 }
 /* }}} */
 
-/* {{{ Resets the MIB tree and set the mib directories to the provided mibdirs. */
+/* {{{ Resets the MIB tree, optionally with other MIB directories and another list of modules. */
 PHP_FUNCTION(snmp_init_mib)
 {
 	zend_string *mibdirs = NULL;
+	HashTable *mibs = NULL;
+	smart_str list = {0};
 
-	ZEND_PARSE_PARAMETERS_START(0, 1)
+	ZEND_PARSE_PARAMETERS_START(0, 2)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_PATH_STR_OR_NULL(mibdirs)
+		Z_PARAM_ARRAY_HT_OR_NULL(mibs)
 	ZEND_PARSE_PARAMETERS_END();
 
-	shutdown_mib();
+	if (mibs) {
+		zval *mib;
+		ZEND_HASH_FOREACH_VAL(mibs, mib) {
+			ZVAL_DEREF(mib);
+			if (Z_TYPE_P(mib) != IS_STRING) {
+				smart_str_free(&list);
+				zend_argument_type_error(2, "must contain only strings, %s given", zend_zval_value_name(mib));
+				RETURN_THROWS();
+			}
+			if (Z_STRLEN_P(mib) == 0 || strpbrk(Z_STRVAL_P(mib), ENV_SEPARATOR) != NULL
+					|| memchr(Z_STRVAL_P(mib), '\0', Z_STRLEN_P(mib)) != NULL) {
+				smart_str_free(&list);
+				zend_argument_value_error(2, "must contain only module names, got \"%s\"", Z_STRVAL_P(mib));
+				RETURN_THROWS();
+			}
+			if (list.s) {
+				smart_str_appendc(&list, ENV_SEPARATOR_CHAR);
+			}
+			smart_str_append(&list, Z_STR_P(mib));
+		} ZEND_HASH_FOREACH_END();
+		smart_str_0(&list);
+		// The tree differs from the default one, reset it at the end of the request
+		mib_needs_reset = 1;
+	}
 
 	// If the mibdirs has been changed, we need to reset the MIB tree at the end of the request
 	if (mibdirs != NULL) {
 		mib_needs_reset = 1;
 		netsnmp_ds_set_string(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIBDIRS, ZSTR_VAL(mibdirs));
 	}
-#ifdef HAVE_NETSNMP_INIT_MIB
-	netsnmp_init_mib();
-#else
-	init_mib();
-#endif
-	mib_tree_loaded = true;
+
+	php_snmp_build_mib_tree(mibs ? (list.s ? ZSTR_VAL(list.s) : "") : NULL);
+	smart_str_free(&list);
 }
 /* }}} */
 
@@ -2693,21 +2748,15 @@ PHP_MINIT_FUNCTION(snmp)
 		char *mibs = getenv("MIBS"), *mibfiles = getenv("MIBFILES");
 		mibs = mibs ? strdup(mibs) : NULL;
 		mibfiles = mibfiles ? strdup(mibfiles) : NULL;
-		setenv("MIBS", "", 1);
-		unsetenv("MIBFILES");
+		php_snmp_setenv("MIBS", "");
+		php_snmp_setenv("MIBFILES", NULL);
 
 		init_snmp("snmpapp");
 
-		if (mibs) {
-			setenv("MIBS", mibs, 1);
-			free(mibs);
-		} else {
-			unsetenv("MIBS");
-		}
-		if (mibfiles) {
-			setenv("MIBFILES", mibfiles, 1);
-			free(mibfiles);
-		}
+		php_snmp_setenv("MIBS", mibs);
+		php_snmp_setenv("MIBFILES", mibfiles);
+		free(mibs);
+		free(mibfiles);
 	}
 #else
 	init_snmp("snmpapp");

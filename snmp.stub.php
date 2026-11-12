@@ -192,7 +192,7 @@ namespace
 
     function snmp_read_mib(string $filename): bool {}
 
-    function snmp_init_mib(?string $mibdirs): void {}
+    function snmp_init_mib(?string $mibdirs = null, ?array $mibs = null): void {}
 
     /** @refcount 1 */
     function snmp_translate(array|string $object_id, ?Snmp\OidOutput $format = null): array|string|false {}
