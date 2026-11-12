@@ -28,8 +28,9 @@ SNMPv3 algorithms (`setSecurity()`, `snmp3_*()`):
 | Authentication | `MD5`, `SHA`, `SHA224`, `SHA256`, `SHA384`, `SHA512` |
 | Privacy | `DES`, `AES` (= `AES128`), `AES192`, `AES256`, `AES192C`, `AES256C` (Cisco key extension) |
 
-`phpversion('snmp')` returns `1.0.0`, not the PHP version. Use that, or
-`property_exists(SNMP::class, 'use_bulk')`, to detect this build.
+`phpversion('snmp')` returns this build's version (e.g. `0.0.1`, the release
+tag without the `v`), not the PHP version. To detect this build, check
+`defined('SNMP_LIBRENMS_VERSION')`; the constant holds the same version.
 
 ## Install
 

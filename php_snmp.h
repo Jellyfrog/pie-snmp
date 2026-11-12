@@ -20,7 +20,8 @@
 #ifndef PHP_SNMP_H
 #define PHP_SNMP_H
 
-#define PHP_SNMP_VERSION "1.0.0"
+/* The release tag without the "v"; also SNMP_LIBRENMS_VERSION. Bump with each tag. */
+#define PHP_SNMP_VERSION "0.0.1"
 
 #ifdef HAVE_SNMP
 
