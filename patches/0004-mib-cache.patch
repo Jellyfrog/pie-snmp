@@ -1,4 +1,4 @@
-From b3574426e61e009cc5a41fd2e9d11f18d205be49 Mon Sep 17 00:00:00 2001
+From 3cf113b32be58d5137c27fc04cb8daeb2ca5a931 Mon Sep 17 00:00:00 2001
 From: Jellyfrog <Jellyfrog@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 18:23:45 +0100
 Subject: [PATCH] libsnmp: Add a cache of parsed MIB files
@@ -20,8 +20,8 @@ parse_imports() is split into tokenizing and process_imports() so that
 replaying an IMPORTS clause runs the same code.
 ---
  include/net-snmp/library/parse.h |   4 +
- snmplib/parse.c                  | 634 +++++++++++++++++++++++++++++--
- 2 files changed, 604 insertions(+), 34 deletions(-)
+ snmplib/parse.c                  | 808 +++++++++++++++++++++++++++++--
+ 2 files changed, 763 insertions(+), 49 deletions(-)
 
 diff --git a/include/net-snmp/library/parse.h b/include/net-snmp/library/parse.h
 index 48b72077ea..9e106a6bc6 100644
@@ -39,7 +39,7 @@ index 48b72077ea..9e106a6bc6 100644
      NETSNMP_IMPORT
      void            snmp_mib_toggle_options_usage(const char *lead,
 diff --git a/snmplib/parse.c b/snmplib/parse.c
-index d66f10432c..903687f97c 100644
+index d66f10432c..c161484ee4 100644
 --- a/snmplib/parse.c
 +++ b/snmplib/parse.c
 @@ -572,6 +572,15 @@ static struct node *parse_objectid(FILE *, char *);
@@ -148,7 +148,8 @@ index d66f10432c..903687f97c 100644
 +        }
 +        type = get_token(fp, token, MAXTOKEN);
 +    }
-+
+ 
+-            for (old_i = i; i < import_count; ++i)
 +    if (save)
 +        mc_record_imports(labels, groups, names, import_count, ngroups);
 +    else
@@ -189,8 +190,7 @@ index d66f10432c..903687f97c 100644
 +
 +    for (g = 0; g < ngroups; ++g) {
 +        int             found = 0;
- 
--            for (old_i = i; i < import_count; ++i)
++
 +        this_module = which_module(names[g]);
 +        for (i = 0; i < import_count; ++i)
 +            if (groups[i] == g)
@@ -258,7 +258,7 @@ index d66f10432c..903687f97c 100644
  }
  
  
-@@ -4397,6 +4459,482 @@ read_import_replacements(const char *old_module_name,
+@@ -4397,6 +4459,523 @@ read_import_replacements(const char *old_module_name,
      return read_module_replacements(old_module_name);
  }
  
@@ -320,6 +320,41 @@ index d66f10432c..903687f97c 100644
 +static int      mc_enabled;
 +static struct mc_entry *mc_head;
 +static struct mc_entry *mc_rec;         /* the entry being recorded */
++
++/*
++ * The module index of a MIB directory (add_mibdir()): the module in each
++ * file, or none. Used while the directory and the file are unchanged.
++ */
++struct mc_dirfile {
++    char           *path;
++    char           *module;         /* NULL: not a MIB file */
++    time_t          mtime;
++    off_t           size;
++};
++
++struct mc_dir {
++    char           *name;
++    time_t          mtime;
++    int             count;
++    struct mc_dirfile *files;
++    struct mc_dir  *next;
++};
++
++static struct mc_dir *mc_dirs;
++
++static void
++mc_free_dir(struct mc_dir *d)
++{
++    int             i;
++
++    for (i = 0; i < d->count; i++) {
++        free(d->files[i].path);
++        free(d->files[i].module);
++    }
++    free(d->files);
++    free(d->name);
++    free(d);
++}
 +
 +static int
 +mc_options(void)
@@ -453,12 +488,18 @@ index d66f10432c..903687f97c 100644
 +netsnmp_mib_cache_clear(void)
 +{
 +    struct mc_entry *e, *next;
++    struct mc_dir  *d, *dnext;
 +
 +    for (e = mc_head; e; e = next) {
 +        next = e->next;
 +        mc_free_entry(e);
 +    }
 +    mc_head = NULL;
++    for (d = mc_dirs; d; d = dnext) {
++        dnext = d->next;
++        mc_free_dir(d);
++    }
++    mc_dirs = NULL;
 +}
 +
 +void
@@ -741,7 +782,7 @@ index d66f10432c..903687f97c 100644
  static int
  read_from_file(struct module *mp, const char *name)
  {
-@@ -4406,12 +4944,27 @@ read_from_file(struct module *mp, const char *name)
+@@ -4406,12 +4985,27 @@ read_from_file(struct module *mp, const char *name)
      FILE           *fp;
      struct node    *np;
      int             res;
@@ -769,7 +810,7 @@ index d66f10432c..903687f97c 100644
      if ((fp = fopen(mp->file, "r")) == NULL) {
          int rval;
          if (errno == ENOTDIR || errno == ENOENT)
-@@ -4428,6 +4981,7 @@ read_from_file(struct module *mp, const char *name)
+@@ -4428,6 +5022,7 @@ read_from_file(struct module *mp, const char *name)
      File = mp->file;
      mibLine = 1;
      current_module = mp->modid;
@@ -777,7 +818,7 @@ index d66f10432c..903687f97c 100644
      /*
       * Parse the file
       */
-@@ -4441,6 +4995,16 @@ read_from_file(struct module *mp, const char *name)
+@@ -4441,6 +5036,16 @@ read_from_file(struct module *mp, const char *name)
      current_module = oldModule;
      res = !np && gMibError == MODULE_SYNTAX_ERROR ?
          MODULE_SYNTAX_ERROR : MODULE_LOADED_OK;
@@ -794,7 +835,7 @@ index d66f10432c..903687f97c 100644
      while (np) {
          struct node *nnp = np->next;
          free_node(np);
-@@ -5111,6 +5675,7 @@ parse(FILE * fp)
+@@ -5111,6 +5716,7 @@ parse(FILE * fp)
                  objgroups = NULL;
                  objects = NULL;
                  notifs = NULL;
@@ -802,7 +843,7 @@ index d66f10432c..903687f97c 100644
                  do_linkup(mp, root);
                  np = root = NULL;
                  label_table_clear(&labels);
-@@ -5216,6 +5781,7 @@ parse(FILE * fp)
+@@ -5216,6 +5822,7 @@ parse(FILE * fp)
                      }
                  }
              }
@@ -810,6 +851,177 @@ index d66f10432c..903687f97c 100644
              DEBUGMSGTL(("parse-mibs", "Parsing MIB: %d %s\n",
                          current_module, name));
              while ((type = get_token(fp, token, MAXTOKEN)) != ENDOFFILE)
+@@ -5655,38 +6262,46 @@ snmp_get_token(FILE * fp, char *token, int maxtlen)
+ }
+ #endif /* NETSNMP_FEATURE_REMOVE_PARSE_GET_TOKEN */
+ 
+-int
+-add_mibfile(const char* tmpstr, const char* d_name)
++/*
++ * The name of the module in a MIB file, in token (MAXTOKEN bytes).
++ * Returns 0 if the file is a MIB file, 1 if not, -1 if it cannot be opened.
++ */
++static int
++mibfile_module(const char *tmpstr, char *token)
+ {
+     FILE           *fp;
+-    char            token[MAXTOKEN], token2[MAXTOKEN];
++    char            token2[MAXTOKEN];
++    int             res;
+ 
+     /*
+      * which module is this 
+      */
+     if ((fp = fopen(tmpstr, "r")) == NULL) {
+         snmp_log_perror(tmpstr);
+-        return 1;
++        return -1;
+     }
+     DEBUGMSGTL(("parse-mibs", "Checking file: %s...\n",
+                 tmpstr));
+     mibLine = 1;
+     File = tmpstr;
+-    if (get_token(fp, token, MAXTOKEN) != LABEL) {
+-	    fclose(fp);
+-	    return 1;
+-    }
+     /*
+      * simple test for this being a MIB 
+      */
+-    if (get_token(fp, token2, MAXTOKEN) == DEFINITIONS) {
+-        new_module(token, tmpstr);
+-        fclose(fp);
+-        return 0;
+-    } else {
+-        fclose(fp);
++    res = get_token(fp, token, MAXTOKEN) == LABEL
++        && get_token(fp, token2, MAXTOKEN) == DEFINITIONS ? 0 : 1;
++    fclose(fp);
++    return res;
++}
++
++int
++add_mibfile(const char* tmpstr, const char* d_name)
++{
++    char            token[MAXTOKEN];
++
++    if (mibfile_module(tmpstr, token) != 0)
+         return 1;
+-    }
++    new_module(token, tmpstr);
++    return 0;
+ }
+ 
+ static int elemcmp(const void *a, const void *b)
+@@ -5769,6 +6384,91 @@ static int scan_directory(char ***result, const char *dirname)
+  * This is the reason for the #if !(defined(WIN32) || defined(cygwin))
+  * in the add_mibdir function
+  */
++/*
++ * add_mibdir() with the cached module index of the directory. Returns the
++ * number of MIB files, -1 if the directory cannot be read, or -2 if the
++ * cache cannot be used.
++ */
++static int
++mc_add_mibdir(const char *dirname)
++{
++    struct stat     st, fst;
++    struct mc_dir  *d, **dp;
++    char          **filenames;
++    char            token[MAXTOKEN];
++    int             i, n, count = 0;
++
++    if (stat(dirname, &st) != 0)
++        return -2;
++    for (dp = &mc_dirs; *dp; dp = &(*dp)->next)
++        if (!strcmp((*dp)->name, dirname))
++            break;
++    d = *dp;
++    if (d && d->mtime != st.st_mtime) {
++        /* files were added, removed or renamed */
++        *dp = d->next;
++        mc_free_dir(d);
++        d = NULL;
++    }
++
++    if (!d) {
++        n = scan_directory(&filenames, dirname);
++        if (n < 0)
++            return -1;
++        d = calloc(1, sizeof(*d));
++        if (d)
++            d->files = calloc(n ? n : 1, sizeof(*d->files));
++        if (!d || !d->files || !(d->name = strdup(dirname))) {
++            if (d) {
++                free(d->files);
++                free(d);
++            }
++            for (i = 0; i < n; i++)
++                free(filenames[i]);
++            free(filenames);
++            return -2;
++        }
++        d->mtime = st.st_mtime;
++        d->count = n;
++        for (i = 0; i < n; i++) {
++            d->files[i].path = filenames[i];
++            if (stat(filenames[i], &fst) == 0) {
++                d->files[i].mtime = fst.st_mtime;
++                d->files[i].size = fst.st_size;
++            }
++            if (mibfile_module(filenames[i], token) == 0) {
++                d->files[i].module = strdup(token);
++                new_module(token, filenames[i]);
++                count++;
++            }
++        }
++        free(filenames);
++        d->next = mc_dirs;
++        mc_dirs = d;
++        return count;
++    }
++
++    for (i = 0; i < d->count; i++) {
++        struct mc_dirfile *f = &d->files[i];
++
++        if (stat(f->path, &fst) != 0 || fst.st_mtime != f->mtime
++            || fst.st_size != f->size) {
++            /* the file changed: read its module again */
++            free(f->module);
++            f->module = NULL;
++            f->mtime = fst.st_mtime;
++            f->size = fst.st_size;
++            if (mibfile_module(f->path, token) == 0)
++                f->module = strdup(token);
++        }
++        if (f->module) {
++            new_module(f->module, f->path);
++            count++;
++        }
++    }
++    return count;
++}
++
+ int
+ add_mibdir(const char *dirname)
+ {
+@@ -5780,6 +6480,16 @@ add_mibdir(const char *dirname)
+ 
+     DEBUGMSGTL(("parse-mibs", "Scanning directory %s\n", dirname));
+ 
++    if (mc_enabled) {
++        count = mc_add_mibdir(dirname);
++        if (count != -2) {
++            File = oldFile;
++            mibLine = oldLine;
++            return count;
++        }
++        count = 0;
++    }
++
+     filename_count = scan_directory(&filenames, dirname);
+ 
+     if (filename_count >= 0) {
 -- 
 2.56.0
 
