@@ -28,7 +28,7 @@ it as a separate package (e.g. Arch `php-snmp`, Debian `php8.5-snmp`),
 remove that package or disable its ini file first.
 
 ```sh
-pie repository:add vcs https://github.com/<you>/php-ext-snmp
+pie repository:add vcs https://github.com/jellyfrog/pie-snmp
 pie install jellyfrog/snmp:dev-main
 ```
 
