@@ -1,0 +1,280 @@
+From 48c5dfa475ffc5e1a2fc04ff210a57724f476d61 Mon Sep 17 00:00:00 2001
+From: Jellyfrog <Jellyfrog@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 20:13:22 +0100
+Subject: [PATCH] libsnmp: Faster module lookups and node linking
+
+which_module(), find_module(), module_name(), get_tc_index() and
+new_module() walked the list of all modules, one per MIB file in the
+MIB directories. new_module() is called for every file when the MIB
+directories are scanned, so that was quadratic in the number of files,
+for every tree that is built. Look modules up by name in a hash table
+and by id in an array, both maintained by new_module() and cleared by
+unload_all_mibs().
+
+Nodes waiting for their parent are kept in NHASHSIZE (128) buckets by
+name_hash() of the parent label. do_subtree() and the orphan handling of
+do_linkup() compared a label with the parent of every node in the
+bucket. Keep the full name_hash() of the parent in the node and compare
+it first. The buckets and their order do not change.
+---
+ include/net-snmp/library/parse.h |   1 +
+ snmplib/parse.c                  | 122 ++++++++++++++++++++++---------
+ 2 files changed, 90 insertions(+), 33 deletions(-)
+
+diff --git a/include/net-snmp/library/parse.h b/include/net-snmp/library/parse.h
+index 9e106a6bc6..0c85e75298 100644
+--- a/include/net-snmp/library/parse.h
++++ b/include/net-snmp/library/parse.h
+@@ -136,6 +136,7 @@ SOFTWARE.
+          */
+         int             modid;  /* The index number of this module */
+         struct module  *next;   /* Linked list pointer */
++        struct module  *hnext;  /* Next module in the same name hash bucket */
+     };
+ 
+     struct module_compatability {
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index df50d59d84..d8bf8ba398 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -118,6 +118,7 @@ struct node {
+     char           *defaultValue;
+     char           *filename;
+     int             lineno;
++    int             parent_hash;  /* name_hash(parent), set by init_node_hash() */
+ };
+ 
+ /*
+@@ -535,6 +536,35 @@ static struct node *nbuckets[NHASHSIZE];
+ static struct tree *tbuckets[NHASHSIZE];
+ static struct module *module_head = NULL;
+ 
++/*
++ * Module lookups by name (hash buckets chained by hnext) and by id.
++ * Maintained by new_module() and unload_all_mibs().
++ */
++#define MODHASHSIZE  1024
++static struct module *mod_buckets[MODHASHSIZE];
++static struct module **mod_by_id;
++static int      mod_by_id_alloc;
++
++static unsigned int
++mod_hash(const char *name)
++{
++    unsigned int    h = 2166136261u;
++
++    for (; *name; name++) {
++        h ^= (unsigned char) tolower((unsigned char) *name);
++        h *= 16777619u;
++    }
++    return h & (MODHASHSIZE - 1);
++}
++
++static struct module *module_by_name(const char *name);
++
++static struct module *
++module_by_id(int modid)
++{
++    return modid >= 0 && modid < mod_by_id_alloc ? mod_by_id[modid] : NULL;
++}
++
+ static struct node *orphan_nodes = NULL;
+ NETSNMP_IMPORT struct tree *tree_head;
+ struct tree        *tree_head = NULL;
+@@ -767,7 +797,8 @@ init_node_hash(struct node *nodes)
+     memset(nbuckets, 0, sizeof(nbuckets));
+     for (np = nodes; np;) {
+         nextp = np->next;
+-        hash = NBUCKET(name_hash(np->parent));
++        np->parent_hash = name_hash(np->parent);
++        hash = NBUCKET(np->parent_hash);
+         np->next = nbuckets[hash];
+         nbuckets[hash] = np;
+         np = nextp;
+@@ -1882,13 +1913,15 @@ do_subtree(struct tree *root, struct node **nodes)
+     }
+ 
+     tp = root;
+-    headp = &nbuckets[NBUCKET(name_hash(tp->label))];
++    hash = name_hash(tp->label);
++    headp = &nbuckets[NBUCKET(hash)];
+     /*
+      * Search each of the nodes for one whose parent is root, and
+-     * move each into a separate list.
++     * move each into a separate list. Most nodes of the bucket have
++     * another parent: compare the full hash before the label.
+      */
+     for (np = *headp; np; np = np->next) {
+-        if (!label_compare(tp->label, np->parent)) {
++        if (np->parent_hash == hash && !label_compare(tp->label, np->parent)) {
+             /*
+              * take this node out of the node list 
+              */
+@@ -2216,12 +2249,13 @@ do_linkup(struct module *mp, struct node *np)
+         struct node    *next_onp;
+         for (onp = nbuckets[i]; onp; onp = next_onp) {
+             struct node    *op = NULL;
+-            int             hash = NBUCKET(name_hash(onp->label));
++            int             full = name_hash(onp->label);
++            int             hash = NBUCKET(full);
+ 
+             next_onp = onp->next;
+             np = nbuckets[hash];
+             while (np) {
+-                if (label_compare(onp->label, np->parent)) {
++                if (np->parent_hash != full || label_compare(onp->label, np->parent)) {
+                     op = np;
+                     np = np->next;
+                 } else {
+@@ -2244,11 +2278,12 @@ do_linkup(struct module *mp, struct node *np)
+         more = 0;
+         for (onp = orphan_nodes; onp != oldp; onp = onp->next) {
+             struct node    *op = NULL;
+-            int             hash = NBUCKET(name_hash(onp->label));
++            int             full = name_hash(onp->label);
++            int             hash = NBUCKET(full);
+ 
+             np = nbuckets[hash];
+             while (np) {
+-                if (label_compare(onp->label, np->parent)) {
++                if (np->parent_hash != full || label_compare(onp->label, np->parent)) {
+                     op = np;
+                     np = np->next;
+                 } else {
+@@ -2548,9 +2583,7 @@ get_tc_index(const char *descriptor, int modid)
+      *  by searching the import list
+      */
+ 
+-    for (mp = module_head; mp; mp = mp->next)
+-        if (mp->modid == modid)
+-            break;
++    mp = module_by_id(modid);
+     if (mp)
+         for (i = 0, mip = mp->imports; i < mp->no_imports; ++i, ++mip) {
+             if (!label_compare(mip->label, descriptor)) {
+@@ -4343,11 +4376,10 @@ dump_module_list(void)
+ int
+ which_module(const char *name)
+ {
+-    struct module  *mp;
++    struct module  *mp = module_by_name(name);
+ 
+-    for (mp = module_head; mp; mp = mp->next)
+-        if (!label_compare(mp->name, name))
+-            return (mp->modid);
++    if (mp)
++        return (mp->modid);
+ 
+     DEBUGMSGTL(("parse-mibs", "Module %s not found\n", name));
+     return (-1);
+@@ -4359,13 +4391,12 @@ which_module(const char *name)
+ char           *
+ module_name(int modid, char *cp)
+ {
+-    struct module  *mp;
++    struct module  *mp = module_by_id(modid);
+ 
+-    for (mp = module_head; mp; mp = mp->next)
+-        if (mp->modid == modid) {
+-            strcpy(cp, mp->name);
+-            return (cp);
+-        }
++    if (mp) {
++        strcpy(cp, mp->name);
++        return (cp);
++    }
+ 
+     if (modid != -1) DEBUGMSGTL(("parse-mibs", "Module %d not found\n", modid));
+     sprintf(cp, "#%d", modid);
+@@ -5076,9 +5107,9 @@ read_module_internal(const char *name)
+ 
+     netsnmp_init_mib_internals();
+ 
+-    for (mp = module_head; mp; mp = mp->next)
+-        if (!label_compare(mp->name, name))
+-            return read_from_file(mp, name);
++    mp = module_by_name(name);
++    if (mp)
++        return read_from_file(mp, name);
+ 
+     return MODULE_NOT_FOUND;
+ }
+@@ -5367,6 +5398,9 @@ unload_all_mibs(void)
+ 
+     max_module = 0;
+     current_module = 0;
++    memset(mod_buckets, 0, sizeof(mod_buckets));
++    if (mod_by_id)
++        memset(mod_by_id, 0, mod_by_id_alloc * sizeof(*mod_by_id));
+     module_map_head = NULL;
+     SNMP_FREE(last_err_module);
+ 
+@@ -5384,13 +5418,24 @@ unload_all_mibs(void)
+     first_err_module = 1;
+ }
+ 
++static struct module *
++module_by_name(const char *name)
++{
++    struct module  *mp;
++
++    for (mp = mod_buckets[mod_hash(name)]; mp; mp = mp->hnext)
++        if (!label_compare(mp->name, name))
++            return mp;
++    return NULL;
++}
++
+ static void
+ new_module(const char *name, const char *file)
+ {
+     struct module  *mp;
+ 
+-    for (mp = module_head; mp; mp = mp->next)
+-        if (!label_compare(mp->name, name)) {
++    mp = module_by_name(name);
++    if (mp) {
+             DEBUGMSGTL(("parse-mibs", "  Module %s already noted\n", name));
+             /*
+              * Not the same file 
+@@ -5433,6 +5478,23 @@ new_module(const char *name, const char *file)
+     mp->imports = NULL;
+     mp->no_imports = -1;        /* Not yet loaded */
+     mp->modid = max_module;
++    if (max_module >= mod_by_id_alloc) {
++        int             n = mod_by_id_alloc ? 2 * mod_by_id_alloc : 256;
++        struct module **v = realloc(mod_by_id, n * sizeof(*v));
++
++        if (v == NULL) {
++            free(mp->name);
++            free(mp->file);
++            free(mp);
++            return;
++        }
++        memset(v + mod_by_id_alloc, 0, (n - mod_by_id_alloc) * sizeof(*v));
++        mod_by_id = v;
++        mod_by_id_alloc = n;
++    }
++    mod_by_id[max_module] = mp;
++    mp->hnext = mod_buckets[mod_hash(name)];
++    mod_buckets[mod_hash(name)] = mp;
+     ++max_module;
+ 
+     mp->next = module_head;     /* Or add to the *end* of the list? */
+@@ -6898,13 +6960,7 @@ find_node2(const char *name, const char *module)
+ struct module  *
+ find_module(int mid)
+ {
+-    struct module  *mp;
+-
+-    for (mp = module_head; mp != NULL; mp = mp->next) {
+-        if (mp->modid == mid)
+-            break;
+-    }
+-    return mp;
++    return module_by_id(mid);
+ }
+ #endif /* NETSNMP_FEATURE_REMOVE_FIND_MODULE */
+ 
+-- 
+2.56.0
+
