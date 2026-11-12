@@ -1,70 +1,40 @@
 PHP_ARG_WITH([snmp],
   [for SNMP support],
-  [AS_HELP_STRING([[--with-snmp[=DIR]]],
-    [Include SNMP support. Use PKG_CONFIG_PATH (or SNMP_CFLAGS and SNMP_LIBS)
-    environment variables, or alternatively the optional DIR argument to
-    customize where to look for the net-snmp-config utility of the NET-SNMP
-    library.])],
+  [AS_HELP_STRING([--with-snmp],
+    [Include SNMP support. Net-SNMP is built from the bundled net-snmp/
+    submodule (plus patches/*.patch) and linked statically. Extra Net-SNMP
+    configure arguments can be passed in NETSNMP_CONFIGURE_ARGS.])],
   [yes])
 
 if test "$PHP_SNMP" != "no"; then
-  snmp_found=no
-  AS_VAR_IF([PHP_SNMP], [yes],
-    [PKG_CHECK_MODULES([SNMP], [netsnmp >= 5.3], [snmp_found=yes], [:])])
+  AS_IF([test "$PHP_SNMP" != "yes"],
+    [AC_MSG_WARN([--with-snmp=DIR is ignored; the bundled Net-SNMP is used])])
 
-  AS_VAR_IF([snmp_found], [no], [
-    AS_VAR_IF([PHP_SNMP], [yes],
-      [AC_PATH_PROG([SNMP_CONFIG], [net-snmp-config],, [/usr/local/bin:$PATH])],
-      [SNMP_CONFIG="$PHP_SNMP/bin/net-snmp-config"])
+  dnl Build the bundled Net-SNMP now, so the checks below run against it.
+  AC_MSG_NOTICE([building bundled Net-SNMP (this takes a while)])
+  AS_IF([! $SHELL "$abs_srcdir/scripts/build-netsnmp.sh" "$abs_srcdir" "$abs_builddir"],
+    [AC_MSG_ERROR([building the bundled Net-SNMP failed])])
 
-    AS_IF([test ! -x "$SNMP_CONFIG"],
-      [AC_MSG_ERROR(m4_text_wrap([
-        Could not find net-snmp-config binary. Please check your net-snmp
-        installation.
-      ]))])
-
-    snmp_version=$($SNMP_CONFIG --version)
-    AS_VERSION_COMPARE([$snmp_version], [5.3],
-      [AC_MSG_ERROR(m4_text_wrap([
-        Net-SNMP version 5.3 or greater required (detected $snmp_version).
-      ]))])
-
-    SNMP_PREFIX=$($SNMP_CONFIG --prefix)
-    SNMP_CFLAGS="-I${SNMP_PREFIX}/include"
-    SNMP_LIBS=$($SNMP_CONFIG --netsnmp-libs)
-    SNMP_LIBS="$SNMP_LIBS $($SNMP_CONFIG --external-libs)"
-
-    AS_IF([test -z "$SNMP_LIBS" || test -z "$SNMP_PREFIX"],
-      [AC_MSG_ERROR(m4_text_wrap([
-        Could not find the required paths. Please check your net-snmp
-        installation.
-      ]))])
-  ])
+  SNMP_DIR="$abs_builddir/netsnmp-build"
+  SNMP_CFLAGS="-I$SNMP_DIR/include"
+  SNMP_LIBS="$SNMP_DIR/snmplib/.libs/libnetsnmp.a $($SHELL "$SNMP_DIR/net-snmp-config" --external-libs)"
 
   PHP_EVAL_INCLINE([$SNMP_CFLAGS])
-  PHP_EVAL_LIBLINE([$SNMP_LIBS], [SNMP_SHARED_LIBADD])
-  SNMP_LIBNAME=netsnmp
+  SNMP_SHARED_LIBADD="$SNMP_LIBS"
 
-  dnl Test build.
-  PHP_CHECK_LIBRARY([$SNMP_LIBNAME], [init_snmp],
+  dnl Keep the Net-SNMP symbols private to snmp.so, so they cannot clash
+  dnl with a shared libnetsnmp loaded by something else in the process.
+  AS_CASE([$host_os], [linux*|*gnu*|freebsd*],
+    [SNMP_SHARED_LIBADD="$SNMP_SHARED_LIBADD -Wl,--exclude-libs,libnetsnmp.a"])
+
+  LIBS_SAVE=$LIBS
+  LIBS="$SNMP_LIBS $LIBS"
+  AC_CHECK_FUNC([init_snmp],
     [AC_DEFINE([HAVE_SNMP], [1],
       [Define to 1 if the PHP extension 'snmp' is available.])],
-    [AC_MSG_FAILURE([SNMP sanity check failed.])],
-    [$SNMP_SHARED_LIBADD])
-
-  dnl Check whether netsnmp_init_mib() exists.
-  PHP_CHECK_LIBRARY([$SNMP_LIBNAME], [netsnmp_init_mib],
-    [AC_DEFINE([HAVE_NETSNMP_INIT_MIB], [1],
-      [Define to 1 if the Net-SNMP library has the 'netsnmp_init_mib' function.])],
-    [],
-    [$SNMP_SHARED_LIBADD])
-
-  dnl Check whether shutdown_snmp_logging() exists.
-  PHP_CHECK_LIBRARY([$SNMP_LIBNAME], [shutdown_snmp_logging],
-    [AC_DEFINE([HAVE_SHUTDOWN_SNMP_LOGGING], [1],
-      [Define to 1 if SNMP library has the 'shutdown_snmp_logging' function.])],
-    [],
-    [$SNMP_SHARED_LIBADD])
+    [AC_MSG_FAILURE([SNMP sanity check failed.])])
+  AC_CHECK_FUNCS([netsnmp_init_mib shutdown_snmp_logging])
+  LIBS=$LIBS_SAVE
 
   CFLAGS_SAVE=$CFLAGS
   LIBS_SAVE=$LIBS
