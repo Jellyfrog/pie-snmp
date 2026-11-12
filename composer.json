@@ -15,6 +15,10 @@
     "php-ext": {
         "extension-name": "snmp",
         "support-zts": true,
-        "support-nts": true
+        "support-nts": true,
+        "download-url-method": [
+            "pre-packaged-binary",
+            "pre-packaged-source"
+        ]
     }
 }

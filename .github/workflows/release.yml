@@ -1,0 +1,86 @@
+name: Release packages for PIE
+
+# Pushing a tag (e.g. 1.0.0) creates a draft release with:
+# - php_snmp-<tag>-src.tgz: the source including the net-snmp submodule, for
+#   PIE's "pre-packaged-source" (GitHub's own source archives lack submodules)
+# - php_snmp-<tag>_php<X.Y>-<arch>-linux-glibc[-zts].zip: prebuilt extensions
+#   for PIE's "pre-packaged-binary" (Net-SNMP is linked statically; only
+#   OpenSSL 3 is needed at run time)
+# Publish the draft release when all jobs have finished.
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    name: PHP ${{ matrix.php }} ${{ matrix.ts }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+        php:
+          - '8.5'
+        ts:
+          - nts
+          - ts
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: sudo apt update && sudo apt install -y --no-install-recommends libssl-dev
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+        env:
+          phpts: ${{ matrix.ts }}
+
+      - name: Build and add to the release
+        uses: php/pie-ext-binary-builder@0.0.4
+        with:
+          release-tag: ${{ github.ref_name }}
+          create-release: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  source:
+    name: Source package
+    runs-on: ubuntu-latest
+    # The binary jobs create the draft release
+    needs: binaries
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Build the source package
+        run: |
+          asset="php_snmp-${GITHUB_REF_NAME}-src.tgz"
+          git ls-files --recurse-submodules -z \
+            | tar --null --files-from=- --owner=0 --group=0 -czf "$RUNNER_TEMP/$asset"
+          echo "ASSET=$RUNNER_TEMP/$asset" >> "$GITHUB_ENV"
+
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
