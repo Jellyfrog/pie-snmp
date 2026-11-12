@@ -1,0 +1,558 @@
+From 650a898708bf2b2db49762d73a7d270ed5afd64f Mon Sep 17 00:00:00 2001
+From: Jellyfrog <Jellyfrog@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 13:09:03 +0000
+Subject: [PATCH 1/5] testing: Test the undefined group member warnings of the
+ MIB parser
+
+The MIB parser reports members of OBJECT-GROUP, NOTIFICATION-GROUP and
+MODULE-COMPLIANCE clauses that are neither defined in the module nor
+imported. Add a test that checks that exactly those members are
+reported, including members defined after the group that refers to
+them.
+---
+ .../fulltests/default/T165mibundefined_simple | 86 +++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+ create mode 100755 testing/fulltests/default/T165mibundefined_simple
+
+diff --git a/testing/fulltests/default/T165mibundefined_simple b/testing/fulltests/default/T165mibundefined_simple
+new file mode 100755
+index 000000000..8c308fa98
+--- /dev/null
++++ b/testing/fulltests/default/T165mibundefined_simple
+@@ -0,0 +1,86 @@
++#!/bin/sh
++
++. ../support/simple_eval_tools.sh
++
++HEADER MIB parser reports undefined group members
++
++SKIPIF NETSNMP_DISABLE_MIB_LOADING
++
++#
++# The members of OBJECT-GROUP, NOTIFICATION-GROUP and MODULE-COMPLIANCE
++# clauses must be defined in the module or imported. Only the members
++# that are neither may be reported, including members that are defined
++# after the group that refers to them.
++#
++
++mkdir -p "$SNMP_TMPDIR/mibs"
++cat > "$SNMP_TMPDIR/mibs/TEST-UNDEFINED-MIB" <<'EOF'
++TEST-UNDEFINED-MIB DEFINITIONS ::= BEGIN
++
++IMPORTS
++    MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE, Integer32,
++    enterprises
++        FROM SNMPv2-SMI
++    sysUpTime
++        FROM SNMPv2-MIB
++    MODULE-COMPLIANCE, OBJECT-GROUP, NOTIFICATION-GROUP
++        FROM SNMPv2-CONF;
++
++testUndefinedMib MODULE-IDENTITY
++    LAST-UPDATED "202611070000Z"
++    ORGANIZATION "Net-SNMP"
++    CONTACT-INFO "Net-SNMP"
++    DESCRIPTION  "Test MIB for undefined group members."
++    ::= { enterprises 99993 }
++
++testObjects OBJECT-GROUP
++    OBJECTS { definedObject, laterObject, sysUpTime, undefinedObject }
++    STATUS current
++    DESCRIPTION "Defined, defined later, imported and undefined objects."
++    ::= { testUndefinedMib 1 }
++
++testNotifications NOTIFICATION-GROUP
++    NOTIFICATIONS { definedNotification, undefinedNotification }
++    STATUS current
++    DESCRIPTION "Defined and undefined notifications."
++    ::= { testUndefinedMib 2 }
++
++testCompliance MODULE-COMPLIANCE
++    STATUS current
++    DESCRIPTION "Defined and undefined groups."
++    MODULE
++        MANDATORY-GROUPS { testObjects, undefinedGroup }
++    ::= { testUndefinedMib 3 }
++
++definedObject OBJECT-TYPE
++    SYNTAX      Integer32
++    MAX-ACCESS  read-only
++    STATUS      current
++    DESCRIPTION "Defined object."
++    ::= { testUndefinedMib 4 }
++
++definedNotification NOTIFICATION-TYPE
++    OBJECTS     { definedObject }
++    STATUS      current
++    DESCRIPTION "Defined notification."
++    ::= { testUndefinedMib 5 }
++
++laterObject OBJECT-TYPE
++    SYNTAX      Integer32
++    MAX-ACCESS  read-only
++    STATUS      current
++    DESCRIPTION "Object defined after the group that refers to it."
++    ::= { testUndefinedMib 6 }
++
++END
++EOF
++
++CAPTURE "snmptranslate -M $SNMP_TMPDIR/mibs${SNMP_ENV_SEPARATOR}$MIBDIRS -m TEST-UNDEFINED-MIB -On TEST-UNDEFINED-MIB::definedObject"
++CHECK ".1.3.6.1.4.1.99993.4"
++
++CHECK "^Undefined OBJECT (undefinedObject)"
++CHECK "^Undefined NOTIFICATION (undefinedNotification)"
++CHECK "^Undefined OBJECT-GROUP (undefinedGroup)"
++CHECKCOUNT 3 "^Undefined "
++
++FINISHED
+-- 
+2.56.0
+
+
+From 09f5d6b27f2c1a7eed6f99083199bded87b3a5eb Mon Sep 17 00:00:00 2001
+From: Jellyfrog <Jellyfrog@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 13:09:03 +0000
+Subject: [PATCH 2/5] libsnmp: Use the label hash table in scan_objlist()
+
+scan_objlist() checks that every member of an OBJECT-GROUP,
+NOTIFICATION-GROUP or OBJECTS clause is defined in the current module by
+walking the list of all nodes parsed so far. That is quadratic in the
+module size and dominates the load time of large MIBs with many
+conformance groups, e.g. more than 80% of the time spent loading
+TIMETRA-SUBSCRIBER-MGMT-MIB.
+
+Commit c8a28160fe ("libsnmp: Use a hash table for the MIB parser
+duplicate object check") added a hash table with the labels of all nodes
+of the current module. Look the members up in that table instead. The
+import list scan for non-local members is kept: the number of imports is
+bounded by MAX_IMPORTS and members of valid MIBs are defined locally.
+
+Since scan_objlist() now relies on the table holding every node of the
+module, label_table_add() may no longer drop nodes silently:
+
+- If growing the table fails, insert into the existing chained buckets.
+- If an entry cannot be allocated, abort parsing of the module with a
+  "Resource failure" error.
+
+Further changes:
+
+- The table is case-sensitive while label_compare() is strcasecmp() if
+  STRICT_MIB_PARSEING is defined. Keep the node list scan in that
+  configuration so that its behaviour is unchanged.
+- parse_objectgroup() did not check the strdup() result. Check it
+  together with the malloc() result and assert in scan_objlist() that
+  names are not NULL.
+- parse_imports() left a stale import count behind a NULL import list if
+  allocating the new list failed. Reset it.
+
+Load times with snmptranslate -Tz:
+
+  TIMETRA-SUBSCRIBER-MGMT-MIB  530 ms -> 91 ms
+  TIMETRA-BGP-MIB              391 ms -> 74 ms
+  TIMETRA-VRTR-MIB             366 ms -> 68 ms
+
+The output, including the undefined object warnings, is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019ZWdUfDKjFE17nkAqveRsB
+---
+ snmplib/parse.c | 140 +++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 91 insertions(+), 49 deletions(-)
+
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index 7f497e0a2..4f3cd4e01 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -3261,12 +3261,14 @@ parse_objectgroup(FILE * fp, char *name, int what, struct objgroup **ol)
+                 goto skip;
+             }
+             o = (struct objgroup *) malloc(sizeof(struct objgroup));
+-            if (!o) {
++            if (o)
++                o->name = strdup(token);
++            if (!o || !o->name) {
++                free(o);
+                 print_error("Resource failure", token, type);
+                 goto skip;
+             }
+             o->line = mibLine;
+-            o->name = strdup(token);
+             o->next = *ol;
+             *ol = o;
+             type = get_token(fp, token, MAXTOKEN);
+@@ -4197,8 +4199,10 @@ parse_imports(FILE * fp)
+             }
+             mp->imports = (struct module_import *)
+                 calloc(import_count, sizeof(struct module_import));
+-            if (mp->imports == NULL)
++            if (mp->imports == NULL) {
++                mp->no_imports = 0;
+                 goto out;
++            }
+             for (i = 0; i < import_count; ++i) {
+                 mp->imports[i].label = import_list[i].label;
+                 import_list[i].label = NULL;
+@@ -4796,39 +4800,6 @@ new_module(const char *name, const char *file)
+ }
+ 
+ 
+-static void
+-scan_objlist(struct node *root, struct module *mp, struct objgroup *list, const char *error)
+-{
+-    int             oLine = mibLine;
+-
+-    while (list) {
+-        struct objgroup *gp = list;
+-        struct node    *np;
+-        list = list->next;
+-        np = root;
+-        while (np)
+-            if (label_compare(np->label, gp->name))
+-                np = np->next;
+-            else
+-                break;
+-        if (!np) {
+-	    int i;
+-	    struct module_import *mip;
+-	    /* if not local, check if it was IMPORTed */
+-	    for (i = 0, mip = mp->imports; i < mp->no_imports; i++, mip++)
+-		if (strcmp(mip->label, gp->name) == 0)
+-		    break;
+-	    if (i == mp->no_imports) {
+-		mibLine = gp->line;
+-		print_error(error, gp->name, QUOTESTRING);
+-	    }
+-        }
+-        free(gp->name);
+-        free(gp);
+-    }
+-    mibLine = oLine;
+-}
+-
+ static void free_objgroup(struct objgroup *o)
+ {
+     while (o) {
+@@ -4937,29 +4908,34 @@ label_table_find_dup(const struct label_table *lt, const struct node *np)
+ }
+ 
+ /*
+- * Adds @np to @lt. If memory allocation fails, @np is not added. The only
+- * consequence of this is that a duplicate object warning may be missed.
++ * Adds @np to @lt. Returns 0 upon success or -1 if memory allocation failed.
++ * scan_objlist() relies on @lt holding every node of the current module, so
++ * a failure must abort parsing of the module.
+  */
+-static void
++static int
+ label_table_add(struct label_table *lt, struct node *np)
+ {
+     struct label_entry *le, **head;
+     unsigned int    hash;
+ 
+     if (!np->label)
+-        return;
++        return 0;
+     hash = label_hash(np->label);
+     le = label_table_find(lt, np->label, hash);
+     if (le) {
+         if (!le->other && le->first->subid != np->subid)
+             le->other = np;
+-        return;
++        return 0;
+     }
+-    if (lt->count >= lt->size && label_table_grow(lt) < 0)
+-        return;
++    /*
++     * The buckets are chained, so if growing the table fails, the entry can
++     * still be added to the existing buckets.
++     */
++    if (lt->count >= lt->size && label_table_grow(lt) < 0 && !lt->size)
++        return -1;
+     le = malloc(sizeof(*le));
+     if (!le)
+-        return;
++        return -1;
+     le->hash = hash;
+     le->first = np;
+     le->other = NULL;
+@@ -4967,6 +4943,7 @@ label_table_add(struct label_table *lt, struct node *np)
+     le->next = *head;
+     *head = le;
+     lt->count++;
++    return 0;
+ }
+ 
+ static void
+@@ -4988,6 +4965,63 @@ label_table_clear(struct label_table *lt)
+     lt->count = 0;
+ }
+ 
++/*
++ * Returns nonzero if a node with label @name has been parsed in the current
++ * module. @labels holds the nodes of the current module and @root is the list
++ * of those nodes. The hash table is case-sensitive, so it can only be used if
++ * label_compare() is strcmp().
++ */
++static int
++label_is_local(const struct label_table *labels, const struct node *root,
++               const char *name)
++{
++#ifdef STRICT_MIB_PARSEING
++    const struct node *np;
++
++    for (np = root; np; np = np->next)
++        if (np->label && !label_compare(np->label, name))
++            return 1;
++    return 0;
++#else
++    return label_table_find(labels, name, label_hash(name)) != NULL;
++#endif
++}
++
++/*
++ * Reports the members of @list that are neither defined in the current module
++ * nor imported. @labels and @root hold the nodes of the current module.
++ * Frees @list.
++ */
++static void
++scan_objlist(const struct label_table *labels, const struct node *root,
++             const struct module *mp, struct objgroup *list,
++             const char *error)
++{
++    int             oLine = mibLine;
++
++    while (list) {
++        struct objgroup *gp = list;
++
++        list = list->next;
++        netsnmp_assert(gp->name);
++        if (!label_is_local(labels, root, gp->name)) {
++            int             i;
++
++            /* if not local, check if it was IMPORTed */
++            for (i = 0; i < mp->no_imports; i++)
++                if (strcmp(mp->imports[i].label, gp->name) == 0)
++                    break;
++            if (i == mp->no_imports) {
++                mibLine = gp->line;
++                print_error(error, gp->name, QUOTESTRING);
++            }
++        }
++        free(gp->name);
++        free(gp);
++    }
++    mibLine = oLine;
++}
++
+ /*
+  * Parses a mib file and returns a linked list of nodes found in the file.
+  * Returns NULL on error.
+@@ -5043,9 +5077,12 @@ parse(FILE * fp)
+                 for (mp = module_head; mp; mp = mp->next)
+                     if (mp->modid == current_module)
+                         break;
+-                scan_objlist(root, mp, objgroups, "Undefined OBJECT-GROUP");
+-                scan_objlist(root, mp, objects, "Undefined OBJECT");
+-                scan_objlist(root, mp, notifs, "Undefined NOTIFICATION");
++                scan_objlist(&labels, root, mp, objgroups,
++                             "Undefined OBJECT-GROUP");
++                scan_objlist(&labels, root, mp, objects,
++                             "Undefined OBJECT");
++                scan_objlist(&labels, root, mp, notifs,
++                             "Undefined NOTIFICATION");
+                 objgroups = NULL;
+                 objects = NULL;
+                 notifs = NULL;
+@@ -5292,10 +5329,12 @@ parse(FILE * fp)
+                     np->next = nnp;
+                 else
+                     np = root = nnp;
+-                label_table_add(&labels, np);
++                if (label_table_add(&labels, np) < 0)
++                    goto out_of_memory;
+                 while (np->next) {
+                     np = np->next;
+-                    label_table_add(&labels, np);
++                    if (label_table_add(&labels, np) < 0)
++                        goto out_of_memory;
+                 }
+                 if (np->type == TYPE_OTHER)
+                     np->type = type;
+@@ -5312,6 +5351,9 @@ parse(FILE * fp)
+     notifs = oldnotifs;
+     return root;
+ 
++out_of_memory:
++    print_error("Resource failure", np->label, QUOTESTRING);
++    gMibError = MODULE_SYNTAX_ERROR;
+ free_mib:
+     label_table_clear(&labels);
+     for (; root; root = np) {
+-- 
+2.56.0
+
+
+From 4c0f239a88489891472c78241ebd1736ce717a9a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 7 Nov 2026 13:09:03 +0000
+Subject: [PATCH 3/5] libsnmp: Parse MODULE clauses that name the current
+ module
+
+If a MODULE-COMPLIANCE MODULE clause names the current module, e.g.
+"MODULE IF-MIB" inside IF-MIB, parse_compliance() did not consume the
+module name. The name was then taken for the next clause, so
+MANDATORY-GROUPS, GROUP and OBJECT were never seen, the rest of the
+compliance statement was skipped and undefined groups in it were never
+reported. Consume the module name and treat the clause like one without
+a module name.
+
+Extend T165 with such a clause.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019ZWdUfDKjFE17nkAqveRsB
+---
+ snmplib/parse.c                               | 21 ++++++++++++-------
+ .../fulltests/default/T165mibundefined_simple | 10 ++++++++-
+ 2 files changed, 22 insertions(+), 9 deletions(-)
+
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index 4f3cd4e01..ccb2482a4 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -3650,15 +3650,20 @@ parse_compliance(FILE * fp, char *name)
+         int             modid = -1;
+         char            modname[MAXTOKEN];
+         type = get_token(fp, token, MAXTOKEN);
+-        if (type == LABEL
+-            && strcmp(token, module_name(current_module, modname))) {
+-            modid = read_module_internal(token);
+-            if (modid != MODULE_LOADED_OK
+-                && modid != MODULE_ALREADY_LOADED) {
+-                print_error("Unknown module", token, type);
+-                goto skip;
++        if (type == LABEL) {
++            /*
++             * A MODULE clause that names the current module is equivalent
++             * to one without a module name.
++             */
++            if (strcmp(token, module_name(current_module, modname))) {
++                modid = read_module_internal(token);
++                if (modid != MODULE_LOADED_OK
++                    && modid != MODULE_ALREADY_LOADED) {
++                    print_error("Unknown module", token, type);
++                    goto skip;
++                }
++                modid = which_module(token);
+             }
+-            modid = which_module(token);
+             type = get_token(fp, token, MAXTOKEN);
+         }
+         if (type == MANDATORYGROUPS) {
+diff --git a/testing/fulltests/default/T165mibundefined_simple b/testing/fulltests/default/T165mibundefined_simple
+index 8c308fa98..fc67becf1 100755
+--- a/testing/fulltests/default/T165mibundefined_simple
++++ b/testing/fulltests/default/T165mibundefined_simple
+@@ -52,6 +52,13 @@ testCompliance MODULE-COMPLIANCE
+         MANDATORY-GROUPS { testObjects, undefinedGroup }
+     ::= { testUndefinedMib 3 }
+ 
++testComplianceSelf MODULE-COMPLIANCE
++    STATUS current
++    DESCRIPTION "Undefined group in a MODULE clause naming this module."
++    MODULE TEST-UNDEFINED-MIB
++        MANDATORY-GROUPS { testNotifications, undefinedSelfGroup }
++    ::= { testUndefinedMib 7 }
++
+ definedObject OBJECT-TYPE
+     SYNTAX      Integer32
+     MAX-ACCESS  read-only
+@@ -81,6 +88,7 @@ CHECK ".1.3.6.1.4.1.99993.4"
+ CHECK "^Undefined OBJECT (undefinedObject)"
+ CHECK "^Undefined NOTIFICATION (undefinedNotification)"
+ CHECK "^Undefined OBJECT-GROUP (undefinedGroup)"
+-CHECKCOUNT 3 "^Undefined "
++CHECK "^Undefined OBJECT-GROUP (undefinedSelfGroup)"
++CHECKCOUNT 4 "^Undefined "
+ 
+ FINISHED
+-- 
+2.56.0
+
+
+From bfe9b106fbf54b43150af07b1f6f071214cdd4b9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 7 Nov 2026 13:09:03 +0000
+Subject: [PATCH 4/5] libsnmp: Pass MAXTOKEN to get_token() in
+ parse_objectgroup()
+
+The token after the OBJECTS or NOTIFICATIONS list was read with the
+token type RIGHTBRACKET as maximum length, so a label of more than 30
+characters at that position was truncated and reported as too long.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019ZWdUfDKjFE17nkAqveRsB
+---
+ snmplib/parse.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index ccb2482a4..eb888bae0 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -3277,7 +3277,7 @@ parse_objectgroup(FILE * fp, char *name, int what, struct objgroup **ol)
+             print_error("Expected \"}\" after list", token, type);
+             goto skip;
+         }
+-        type = get_token(fp, token, type);
++        type = get_token(fp, token, MAXTOKEN);
+     }
+     if (type != STATUS) {
+         print_error("Expected STATUS", token, type);
+-- 
+2.56.0
+
+
+From 3a25d369028e0be9ee701c04cbaa1db5d5c8ba18 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 7 Nov 2026 13:09:04 +0000
+Subject: [PATCH 5/5] libsnmp: Do not add parsed nodes to the label table twice
+
+parse() added the previous tail of the node list to the label table again
+each time a new definition was appended. That was a no-op that cost a
+hash computation and a table lookup for about half of all
+label_table_add() calls. Only add the new nodes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_019ZWdUfDKjFE17nkAqveRsB
+---
+ snmplib/parse.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index eb888bae0..4bff3ed3a 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -5334,12 +5334,15 @@ parse(FILE * fp)
+                     np->next = nnp;
+                 else
+                     np = root = nnp;
+-                if (label_table_add(&labels, np) < 0)
+-                    goto out_of_memory;
+-                while (np->next) {
+-                    np = np->next;
++                /*
++                 * The previous tail of the list has already been added to
++                 * the label table.
++                 */
++                for (np = nnp; ; np = np->next) {
+                     if (label_table_add(&labels, np) < 0)
+                         goto out_of_memory;
++                    if (!np->next)
++                        break;
+                 }
+                 if (np->type == TYPE_OTHER)
+                     np->type = type;
+-- 
+2.56.0
+
