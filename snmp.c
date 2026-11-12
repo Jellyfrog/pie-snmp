@@ -1644,9 +1644,80 @@ static void php_snmp(INTERNAL_FUNCTION_PARAMETERS, int st, int version)
 }
 /* }}} */
 
+/* {{{ Initialise Net-SNMP on the first use of the extension, not in MINIT, so
+ * processes that load the extension but never use SNMP do not pay for it. */
+static bool snmp_initialized;
+
+static void php_snmp_save_request_options(void);
+
+static void php_snmp_init(void)
+{
+	netsnmp_log_handler *logh;
+	char *ctype_locale;
+
+	if (EXPECTED(snmp_initialized)) {
+		return;
+	}
+	snmp_initialized = true;
+
+	ctype_locale = setlocale(LC_CTYPE, NULL);
+	ctype_locale = ctype_locale ? strdup(ctype_locale) : NULL;
+
+#ifndef PHP_WIN32
+	{
+		/* Initialise the library without loading any MIB modules or files;
+		 * php_snmp_load_mib_tree() loads them on first use with the
+		 * environment and snmp.conf exactly as they are now. */
+		char *mibs = getenv("MIBS"), *mibfiles = getenv("MIBFILES");
+		mibs = mibs ? strdup(mibs) : NULL;
+		mibfiles = mibfiles ? strdup(mibfiles) : NULL;
+		php_snmp_setenv("MIBS", "");
+		php_snmp_setenv("MIBFILES", NULL);
+
+		init_snmp("snmpapp");
+
+		php_snmp_setenv("MIBS", mibs);
+		php_snmp_setenv("MIBFILES", mibfiles);
+		free(mibs);
+		free(mibfiles);
+	}
+#else
+	init_snmp("snmpapp");
+	mib_tree_loaded = true;
+#endif
+	/* net-snmp corrupts the CTYPE locale during initialization; restore the
+	 * one the script runs with. */
+	if (ctype_locale) {
+		setlocale(LC_CTYPE, ctype_locale);
+		free(ctype_locale);
+	} else {
+		zend_reset_lc_ctype_locale();
+	}
+
+#ifdef NETSNMP_DS_LIB_DONT_PERSIST_STATE
+	/* Prevent update of the snmpapp.conf file */
+	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_DONT_PERSIST_STATE, 1);
+#endif
+
+	/* Disable logging, use exit status'es and related variabled to detect errors */
+	shutdown_snmp_logging();
+	logh = netsnmp_register_loghandler(NETSNMP_LOGHANDLER_NONE, LOG_ERR);
+	if (logh) {
+		logh->pri_max = LOG_ERR;
+	}
+
+
+	/* This request's RINIT ran before the library was initialised (and had
+	 * read its config files): save the options now, so RSHUTDOWN restores them. */
+	php_snmp_save_request_options();
+}
+/* }}} */
+
 /* {{{ Fetch a SNMP object */
 PHP_FUNCTION(snmpget)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GET, SNMP_VERSION_1);
 }
 /* }}} */
@@ -1654,6 +1725,8 @@ PHP_FUNCTION(snmpget)
 /* {{{ Fetch a SNMP object */
 PHP_FUNCTION(snmpgetnext)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GETNEXT, SNMP_VERSION_1);
 }
 /* }}} */
@@ -1661,6 +1734,8 @@ PHP_FUNCTION(snmpgetnext)
 /* {{{ Return all objects under the specified object id */
 PHP_FUNCTION(snmpwalk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, (SNMP_CMD_WALK | SNMP_NUMERIC_KEYS), SNMP_VERSION_1);
 }
 /* }}} */
@@ -1668,6 +1743,8 @@ PHP_FUNCTION(snmpwalk)
 /* {{{ Return all objects including their respective object id within the specified one */
 PHP_FUNCTION(snmprealwalk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_WALK, SNMP_VERSION_1);
 }
 /* }}} */
@@ -1675,6 +1752,8 @@ PHP_FUNCTION(snmprealwalk)
 /* {{{ Set the value of a SNMP object */
 PHP_FUNCTION(snmpset)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_SET, SNMP_VERSION_1);
 }
 /* }}} */
@@ -1682,6 +1761,8 @@ PHP_FUNCTION(snmpset)
 /* {{{ Return the current status of quick_print */
 PHP_FUNCTION(snmp_get_quick_print)
 {
+	php_snmp_init();
+
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	RETURN_BOOL(netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_QUICK_PRINT));
@@ -1691,6 +1772,8 @@ PHP_FUNCTION(snmp_get_quick_print)
 /* {{{ Return all objects including their respective object id within the specified one */
 PHP_FUNCTION(snmp_set_quick_print)
 {
+	php_snmp_init();
+
 	bool quick_print;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "b", &quick_print) == FAILURE) {
@@ -1705,6 +1788,8 @@ PHP_FUNCTION(snmp_set_quick_print)
 /* {{{ Return all values that are enums with their enum value instead of the raw integer */
 PHP_FUNCTION(snmp_set_enum_print)
 {
+	php_snmp_init();
+
 	bool enum_print;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "b", &enum_print) == FAILURE) {
@@ -1719,6 +1804,8 @@ PHP_FUNCTION(snmp_set_enum_print)
 /* {{{ Set walk option. */
 PHP_FUNCTION(snmp_set_mib_option)
 {
+	php_snmp_init();
+
 	zend_enum_Snmp_Mib opt;
 	int snmp_opt;
 	bool val;
@@ -1748,6 +1835,8 @@ PHP_FUNCTION(snmp_set_mib_option)
 /* {{{ Set the string output format. */
 PHP_FUNCTION(snmp_set_string_output_format)
 {
+	php_snmp_init();
+
 	zend_enum_Snmp_StringOutput format;
 	int snmp_format;
 
@@ -1775,6 +1864,8 @@ PHP_FUNCTION(snmp_set_string_output_format)
 /* {{{ Set output format option. */
 PHP_FUNCTION(snmp_set_output_option)
 {
+	php_snmp_init();
+
 	zend_enum_Snmp_Output opt;
 	int snmp_opt;
 	bool val;
@@ -1843,6 +1934,8 @@ static int php_snmp_oid_output_format(zend_long format)
 /* {{{ Set the OID output format. */
 PHP_FUNCTION(snmp_set_oid_output_format)
 {
+	php_snmp_init();
+
 	zend_long format;
 	int snmp_format;
 	zend_object *format_object = NULL;
@@ -1901,6 +1994,8 @@ static zend_string *php_snmp_translate_oid(const zend_string *object_id)
 /* {{{ Translate OIDs between numeric and textual forms using the loaded MIBs. */
 PHP_FUNCTION(snmp_translate)
 {
+	php_snmp_init();
+
 	zend_string *oid_str = NULL;
 	HashTable *oid_ht = NULL;
 	zend_object *format_object = NULL;
@@ -1971,6 +2066,8 @@ PHP_FUNCTION(snmp_translate)
 /* {{{ Fetch a SNMP object */
 PHP_FUNCTION(snmp2_get)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GET, SNMP_VERSION_2c);
 }
 /* }}} */
@@ -1978,6 +2075,8 @@ PHP_FUNCTION(snmp2_get)
 /* {{{ Fetch a SNMP object */
 PHP_FUNCTION(snmp2_getnext)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GETNEXT, SNMP_VERSION_2c);
 }
 /* }}} */
@@ -1985,6 +2084,8 @@ PHP_FUNCTION(snmp2_getnext)
 /* {{{ Return all objects under the specified object id */
 PHP_FUNCTION(snmp2_walk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, (SNMP_CMD_WALK | SNMP_NUMERIC_KEYS), SNMP_VERSION_2c);
 }
 /* }}} */
@@ -1992,6 +2093,8 @@ PHP_FUNCTION(snmp2_walk)
 /* {{{ Return all objects including their respective object id within the specified one */
 PHP_FUNCTION(snmp2_real_walk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_WALK, SNMP_VERSION_2c);
 }
 /* }}} */
@@ -1999,6 +2102,8 @@ PHP_FUNCTION(snmp2_real_walk)
 /* {{{ Set the value of a SNMP object */
 PHP_FUNCTION(snmp2_set)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_SET, SNMP_VERSION_2c);
 }
 /* }}} */
@@ -2006,6 +2111,8 @@ PHP_FUNCTION(snmp2_set)
 /* {{{ Fetch the value of a SNMP object */
 PHP_FUNCTION(snmp3_get)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GET, SNMP_VERSION_3);
 }
 /* }}} */
@@ -2013,6 +2120,8 @@ PHP_FUNCTION(snmp3_get)
 /* {{{ Fetch the value of a SNMP object */
 PHP_FUNCTION(snmp3_getnext)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GETNEXT, SNMP_VERSION_3);
 }
 /* }}} */
@@ -2020,6 +2129,8 @@ PHP_FUNCTION(snmp3_getnext)
 /* {{{ Fetch the value of a SNMP object */
 PHP_FUNCTION(snmp3_walk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, (SNMP_CMD_WALK | SNMP_NUMERIC_KEYS), SNMP_VERSION_3);
 }
 /* }}} */
@@ -2027,6 +2138,8 @@ PHP_FUNCTION(snmp3_walk)
 /* {{{ Fetch the value of a SNMP object */
 PHP_FUNCTION(snmp3_real_walk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_WALK, SNMP_VERSION_3);
 }
 /* }}} */
@@ -2034,6 +2147,8 @@ PHP_FUNCTION(snmp3_real_walk)
 /* {{{ Fetch the value of a SNMP object */
 PHP_FUNCTION(snmp3_set)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_SET, SNMP_VERSION_3);
 }
 /* }}} */
@@ -2041,6 +2156,8 @@ PHP_FUNCTION(snmp3_set)
 /* {{{ Specify the method how the SNMP values will be returned */
 PHP_FUNCTION(snmp_set_valueretrieval)
 {
+	php_snmp_init();
+
 	zend_long method;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &method) == FAILURE) {
@@ -2060,6 +2177,8 @@ PHP_FUNCTION(snmp_set_valueretrieval)
 /* {{{ Return the method how the SNMP values will be returned */
 PHP_FUNCTION(snmp_get_valueretrieval)
 {
+	php_snmp_init();
+
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	RETURN_LONG(SNMP_G(valueretrieval));
@@ -2069,6 +2188,8 @@ PHP_FUNCTION(snmp_get_valueretrieval)
 /* {{{ Reads and parses a MIB file into the active MIB tree. */
 PHP_FUNCTION(snmp_read_mib)
 {
+	php_snmp_init();
+
 	char *filename;
 	size_t filename_len;
 
@@ -2090,6 +2211,8 @@ PHP_FUNCTION(snmp_read_mib)
 /* {{{ Resets the MIB tree, optionally with other MIB directories and another list of modules. */
 PHP_FUNCTION(snmp_init_mib)
 {
+	php_snmp_init();
+
 	zend_string *mibdirs = NULL;
 	HashTable *mibs = NULL;
 	smart_str list = {0};
@@ -2139,6 +2262,8 @@ PHP_FUNCTION(snmp_init_mib)
 /* {{{ Creates a new SNMP session to specified host. */
 PHP_METHOD(SNMP, __construct)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 	zend_string *hostname, *community;
@@ -2182,6 +2307,8 @@ PHP_METHOD(SNMP, __construct)
 /* {{{ Close SNMP session */
 PHP_METHOD(SNMP, close)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 
@@ -2198,6 +2325,8 @@ PHP_METHOD(SNMP, close)
 /* {{{ Fetch a SNMP object returning scalar for single OID and array of oid->value pairs for multi OID request */
 PHP_METHOD(SNMP, get)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GET, (-1));
 }
 /* }}} */
@@ -2205,6 +2334,8 @@ PHP_METHOD(SNMP, get)
 /* {{{ Fetch a SNMP object returning scalar for single OID and array of oid->value pairs for multi OID request */
 PHP_METHOD(SNMP, getnext)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_GETNEXT, (-1));
 }
 /* }}} */
@@ -2212,6 +2343,8 @@ PHP_METHOD(SNMP, getnext)
 /* {{{ Return all objects including their respective object id within the specified one as array of oid->value pairs */
 PHP_METHOD(SNMP, walk)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_WALK, (-1));
 }
 /* }}} */
@@ -2219,6 +2352,8 @@ PHP_METHOD(SNMP, walk)
 /* {{{ Set the value of a SNMP object */
 PHP_METHOD(SNMP, set)
 {
+	php_snmp_init();
+
 	php_snmp(INTERNAL_FUNCTION_PARAM_PASSTHRU, SNMP_CMD_SET, (-1));
 }
 /* }}} */
@@ -2226,6 +2361,8 @@ PHP_METHOD(SNMP, set)
 /* {{{ Set SNMPv3 security-related session parameters */
 PHP_METHOD(SNMP, setSecurity)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 	zend_string *security_level = NULL, *auth_protocol = NULL, *auth_passphrase = NULL;
@@ -2255,6 +2392,8 @@ PHP_METHOD(SNMP, setSecurity)
 /* {{{ Set OID output format */
 PHP_METHOD(SNMP, setOidOutputFormat)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 	zend_enum_Snmp_OidOutput format;
@@ -2294,6 +2433,8 @@ PHP_METHOD(SNMP, setOidOutputFormat)
 /* {{{ Set string output format */
 PHP_METHOD(SNMP, setStringOutputFormat)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 	zend_enum_Snmp_StringOutput format;
@@ -2323,6 +2464,8 @@ PHP_METHOD(SNMP, setStringOutputFormat)
 /* {{{ Get last error code number */
 PHP_METHOD(SNMP, getErrno)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 
@@ -2337,6 +2480,8 @@ PHP_METHOD(SNMP, getErrno)
 /* {{{ Get last error message */
 PHP_METHOD(SNMP, getError)
 {
+	php_snmp_init();
+
 	php_snmp_object *snmp_object;
 	zval *object = ZEND_THIS;
 
@@ -2738,45 +2883,6 @@ const php_snmp_prop_handler php_snmp_property_entries[] = {
 /* {{{ PHP_MINIT_FUNCTION */
 PHP_MINIT_FUNCTION(snmp)
 {
-	netsnmp_log_handler *logh;
-
-#ifndef PHP_WIN32
-	{
-		/* Initialise the library without loading any MIB modules or files;
-		 * php_snmp_load_mib_tree() loads them on first use with the
-		 * environment and snmp.conf exactly as they are now. */
-		char *mibs = getenv("MIBS"), *mibfiles = getenv("MIBFILES");
-		mibs = mibs ? strdup(mibs) : NULL;
-		mibfiles = mibfiles ? strdup(mibfiles) : NULL;
-		php_snmp_setenv("MIBS", "");
-		php_snmp_setenv("MIBFILES", NULL);
-
-		init_snmp("snmpapp");
-
-		php_snmp_setenv("MIBS", mibs);
-		php_snmp_setenv("MIBFILES", mibfiles);
-		free(mibs);
-		free(mibfiles);
-	}
-#else
-	init_snmp("snmpapp");
-	mib_tree_loaded = true;
-#endif
-	/* net-snmp corrupts the CTYPE locale during initialization. */
-	zend_reset_lc_ctype_locale();
-
-#ifdef NETSNMP_DS_LIB_DONT_PERSIST_STATE
-	/* Prevent update of the snmpapp.conf file */
-	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_DONT_PERSIST_STATE, 1);
-#endif
-
-	/* Disable logging, use exit status'es and related variabled to detect errors */
-	shutdown_snmp_logging();
-	logh = netsnmp_register_loghandler(NETSNMP_LOGHANDLER_NONE, LOG_ERR);
-	if (logh) {
-		logh->pri_max = LOG_ERR;
-	}
-
 	memcpy(&php_snmp_object_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	php_snmp_object_handlers.read_property = php_snmp_read_property;
 	php_snmp_object_handlers.write_property = php_snmp_write_property;
@@ -2815,7 +2921,9 @@ PHP_MINIT_FUNCTION(snmp)
 /* {{{ PHP_MSHUTDOWN_FUNCTION */
 PHP_MSHUTDOWN_FUNCTION(snmp)
 {
-	snmp_shutdown("snmpapp");
+	if (snmp_initialized) {
+		snmp_shutdown("snmpapp");
+	}
 
 	zend_hash_destroy(&php_snmp_properties);
 
@@ -2824,7 +2932,7 @@ PHP_MSHUTDOWN_FUNCTION(snmp)
 /* }}} */
 
 /* {{{ PHP_INIT_FUNCTION */
-static PHP_RINIT_FUNCTION(snmp)
+static void php_snmp_save_request_options(void)
 {
 	// Save the output options
 	save_snmplib_output_options(&saved_snmp_settings);
@@ -2833,6 +2941,13 @@ static PHP_RINIT_FUNCTION(snmp)
 	saved_mib_allow_underscores = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_PARSE_LABEL);
 	saved_mib_comment_term = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_COMMENT_TERM);
 	saved_mib_replace = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_REPLACE);
+}
+
+static PHP_RINIT_FUNCTION(snmp)
+{
+	if (snmp_initialized) {
+		php_snmp_save_request_options();
+	}
 
 	return SUCCESS;
 }
@@ -2841,6 +2956,10 @@ static PHP_RINIT_FUNCTION(snmp)
 /* {{{ PHP_RSHUTDOWN_FUNCTION */
 static PHP_RSHUTDOWN_FUNCTION(snmp)
 {
+	if (!snmp_initialized) {
+		return SUCCESS;
+	}
+
 	if (mib_needs_reset) {
 		/* Back to the default MIB tree, rebuilt lazily by the next request that needs it. */
 		shutdown_mib();
