@@ -1,4 +1,4 @@
-From 3cf113b32be58d5137c27fc04cb8daeb2ca5a931 Mon Sep 17 00:00:00 2001
+From 0a21e9f9ada64fb9af39a186d8cee15f315a3631 Mon Sep 17 00:00:00 2001
 From: Jellyfrog <Jellyfrog@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 18:23:45 +0100
 Subject: [PATCH] libsnmp: Add a cache of parsed MIB files
@@ -20,8 +20,8 @@ parse_imports() is split into tokenizing and process_imports() so that
 replaying an IMPORTS clause runs the same code.
 ---
  include/net-snmp/library/parse.h |   4 +
- snmplib/parse.c                  | 808 +++++++++++++++++++++++++++++--
- 2 files changed, 763 insertions(+), 49 deletions(-)
+ snmplib/parse.c                  | 818 +++++++++++++++++++++++++++++--
+ 2 files changed, 773 insertions(+), 49 deletions(-)
 
 diff --git a/include/net-snmp/library/parse.h b/include/net-snmp/library/parse.h
 index 48b72077ea..9e106a6bc6 100644
@@ -39,13 +39,14 @@ index 48b72077ea..9e106a6bc6 100644
      NETSNMP_IMPORT
      void            snmp_mib_toggle_options_usage(const char *lead,
 diff --git a/snmplib/parse.c b/snmplib/parse.c
-index d66f10432c..c161484ee4 100644
+index d66f10432c..df50d59d84 100644
 --- a/snmplib/parse.c
 +++ b/snmplib/parse.c
-@@ -572,6 +572,15 @@ static struct node *parse_objectid(FILE *, char *);
+@@ -572,6 +572,16 @@ static struct node *parse_objectid(FILE *, char *);
  static int      get_tc(const char *, int, int *, struct enum_list **,
                         struct range_list **, char **);
  static int      get_tc_index(const char *, int);
++static int      mc_in_get_tc;   /* get_tc_index() called from get_tc() */
 +struct tc;
 +static void     mc_record_module(const char *);
 +static void     mc_record_imports(char **, const int *, char **, int, int);
@@ -58,16 +59,31 @@ index d66f10432c..c161484ee4 100644
  static struct enum_list *parse_enumlist(FILE *, struct enum_list **);
  static struct range_list *parse_ranges(FILE * fp, struct range_list **);
  static struct node *parse_asntype(FILE *, char *, int *, char *);
-@@ -2551,6 +2560,8 @@ get_tc_index(const char *descriptor, int modid)
+@@ -2496,7 +2506,9 @@ get_tc(const char *descriptor,
+     int             i;
+     struct tc      *tcp;
+ 
++    mc_in_get_tc = 1;
+     i = get_tc_index(descriptor, modid);
++    mc_in_get_tc = 0;
+     if (tc_index)
+         *tc_index = i;
+     if (i != -1) {
+@@ -2551,6 +2563,13 @@ get_tc_index(const char *descriptor, int modid)
          }
  
  
-+    if (modid == -1)
++    /*
++     * While parsing (get_tc()), a lookup that matches any module depends on
++     * what is loaded: such a parse is not cached. Lookups by do_linkup()
++     * run again when a cached file is replayed.
++     */
++    if (modid == -1 && mc_in_get_tc)
 +        mc_uncacheable();
      for (i = 0, tcp = tclist; i < tc_alloc; i++, tcp++) {
          if (tcp->type == 0)
              break;
-@@ -2943,6 +2954,7 @@ parse_asntype(FILE * fp, char *name, int *ntype, char *ntoken)
+@@ -2943,6 +2962,7 @@ parse_asntype(FILE * fp, char *name, int *ntype, char *ntoken)
              tcp->enums = parse_enumlist(fp, &tcp->enums);
              *ntype = get_token(fp, ntoken, MAXTOKEN);
          }
@@ -75,7 +91,7 @@ index d66f10432c..c161484ee4 100644
          return NULL;
      }
  
-@@ -3680,6 +3692,7 @@ parse_compliance(FILE * fp, char *name)
+@@ -3680,6 +3700,7 @@ parse_compliance(FILE * fp, char *name)
                      print_error("Unknown module", token, type);
                      goto skip;
                  }
@@ -83,7 +99,7 @@ index d66f10432c..c161484ee4 100644
                  modid = which_module(token);
              }
              type = get_token(fp, token, MAXTOKEN);
-@@ -3834,6 +3847,7 @@ parse_capabilities(FILE * fp, char *name)
+@@ -3834,6 +3855,7 @@ parse_capabilities(FILE * fp, char *name)
              print_error("Module not found", token, type);
              goto skip;
          }
@@ -91,7 +107,7 @@ index d66f10432c..c161484ee4 100644
          modid = which_module(token);
          type = get_token(fp, token, MAXTOKEN);
          if (type != INCLUDES) {
-@@ -4143,16 +4157,23 @@ parse_imports(FILE * fp)
+@@ -4143,16 +4165,23 @@ parse_imports(FILE * fp)
  {
      register int    type;
      char            token[MAXTOKEN];
@@ -123,7 +139,7 @@ index d66f10432c..c161484ee4 100644
  
      type = get_token(fp, token, MAXTOKEN);
  
-@@ -4166,38 +4187,85 @@ parse_imports(FILE * fp)
+@@ -4166,38 +4195,85 @@ parse_imports(FILE * fp)
                  do {
                      type = get_token(fp, token, MAXTOKEN);
                  } while (type != SEMI && type != ENDOFFILE);
@@ -148,8 +164,7 @@ index d66f10432c..c161484ee4 100644
 +        }
 +        type = get_token(fp, token, MAXTOKEN);
 +    }
- 
--            for (old_i = i; i < import_count; ++i)
++
 +    if (save)
 +        mc_record_imports(labels, groups, names, import_count, ngroups);
 +    else
@@ -164,7 +179,8 @@ index d66f10432c..c161484ee4 100644
 +    free(groups);
 +    free(names);
 +}
-+
+ 
+-            for (old_i = i; i < import_count; ++i)
 +/*
 + * Read the modules of an IMPORTS clause, in order, and save the imported
 + * descriptors in the current module (unless save is 0). Takes over the
@@ -228,7 +244,7 @@ index d66f10432c..c161484ee4 100644
  
      /*
       * Save the import information
-@@ -4205,8 +4273,6 @@ parse_imports(FILE * fp)
+@@ -4205,8 +4281,6 @@ parse_imports(FILE * fp)
       */
      for (mp = module_head; mp; mp = mp->next) {
          if (mp->modid == current_module) {
@@ -237,7 +253,7 @@ index d66f10432c..c161484ee4 100644
              if (mp->imports && (mp->imports != root_imports)) {
                  /*
                   * this can happen if all modules are in one source file. 
-@@ -4227,8 +4293,7 @@ parse_imports(FILE * fp)
+@@ -4227,8 +4301,7 @@ parse_imports(FILE * fp)
                  goto out;
              }
              for (i = 0; i < import_count; ++i) {
@@ -247,7 +263,7 @@ index d66f10432c..c161484ee4 100644
                  mp->imports[i].modid = import_list[i].modid;
                  DEBUGMSGTL(("parse-mibs",
                              "#### adding Module %d '%s' %d\n", mp->modid,
-@@ -4245,10 +4310,7 @@ parse_imports(FILE * fp)
+@@ -4245,10 +4318,7 @@ parse_imports(FILE * fp)
      print_module_not_found(module_name(current_module, modbuf));
  
  out:
@@ -258,7 +274,7 @@ index d66f10432c..c161484ee4 100644
  }
  
  
-@@ -4397,6 +4459,523 @@ read_import_replacements(const char *old_module_name,
+@@ -4397,6 +4467,525 @@ read_import_replacements(const char *old_module_name,
      return read_module_replacements(old_module_name);
  }
  
@@ -279,7 +295,9 @@ index d66f10432c..c161484ee4 100644
 + * (they decide which file an imported module is read from) and parser
 + * options. Files that failed to parse, and files whose parse looked up a
 + * textual convention imported from a module that was not found (that
-+ * matches whatever module is loaded), are not cached.
++ * matches whatever module is loaded), are not cached. The module index of
++ * each MIB directory (add_mibdir()) is cached too, while the directory is
++ * unchanged.
 + */
 +#define MC_MODULE  1
 +#define MC_IMPORTS 2
@@ -782,7 +800,7 @@ index d66f10432c..c161484ee4 100644
  static int
  read_from_file(struct module *mp, const char *name)
  {
-@@ -4406,12 +4985,27 @@ read_from_file(struct module *mp, const char *name)
+@@ -4406,12 +4995,27 @@ read_from_file(struct module *mp, const char *name)
      FILE           *fp;
      struct node    *np;
      int             res;
@@ -810,7 +828,7 @@ index d66f10432c..c161484ee4 100644
      if ((fp = fopen(mp->file, "r")) == NULL) {
          int rval;
          if (errno == ENOTDIR || errno == ENOENT)
-@@ -4428,6 +5022,7 @@ read_from_file(struct module *mp, const char *name)
+@@ -4428,6 +5032,7 @@ read_from_file(struct module *mp, const char *name)
      File = mp->file;
      mibLine = 1;
      current_module = mp->modid;
@@ -818,7 +836,7 @@ index d66f10432c..c161484ee4 100644
      /*
       * Parse the file
       */
-@@ -4441,6 +5036,16 @@ read_from_file(struct module *mp, const char *name)
+@@ -4441,6 +5046,16 @@ read_from_file(struct module *mp, const char *name)
      current_module = oldModule;
      res = !np && gMibError == MODULE_SYNTAX_ERROR ?
          MODULE_SYNTAX_ERROR : MODULE_LOADED_OK;
@@ -835,7 +853,7 @@ index d66f10432c..c161484ee4 100644
      while (np) {
          struct node *nnp = np->next;
          free_node(np);
-@@ -5111,6 +5716,7 @@ parse(FILE * fp)
+@@ -5111,6 +5726,7 @@ parse(FILE * fp)
                  objgroups = NULL;
                  objects = NULL;
                  notifs = NULL;
@@ -843,7 +861,7 @@ index d66f10432c..c161484ee4 100644
                  do_linkup(mp, root);
                  np = root = NULL;
                  label_table_clear(&labels);
-@@ -5216,6 +5822,7 @@ parse(FILE * fp)
+@@ -5216,6 +5832,7 @@ parse(FILE * fp)
                      }
                  }
              }
@@ -851,7 +869,7 @@ index d66f10432c..c161484ee4 100644
              DEBUGMSGTL(("parse-mibs", "Parsing MIB: %d %s\n",
                          current_module, name));
              while ((type = get_token(fp, token, MAXTOKEN)) != ENDOFFILE)
-@@ -5655,38 +6262,46 @@ snmp_get_token(FILE * fp, char *token, int maxtlen)
+@@ -5655,38 +6272,46 @@ snmp_get_token(FILE * fp, char *token, int maxtlen)
  }
  #endif /* NETSNMP_FEATURE_REMOVE_PARSE_GET_TOKEN */
  
@@ -913,7 +931,7 @@ index d66f10432c..c161484ee4 100644
  }
  
  static int elemcmp(const void *a, const void *b)
-@@ -5769,6 +6384,91 @@ static int scan_directory(char ***result, const char *dirname)
+@@ -5769,6 +6394,91 @@ static int scan_directory(char ***result, const char *dirname)
   * This is the reason for the #if !(defined(WIN32) || defined(cygwin))
   * in the add_mibdir function
   */
@@ -1005,7 +1023,7 @@ index d66f10432c..c161484ee4 100644
  int
  add_mibdir(const char *dirname)
  {
-@@ -5780,6 +6480,16 @@ add_mibdir(const char *dirname)
+@@ -5780,6 +6490,16 @@ add_mibdir(const char *dirname)
  
      DEBUGMSGTL(("parse-mibs", "Scanning directory %s\n", dirname));
  
