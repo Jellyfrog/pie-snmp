@@ -1766,6 +1766,27 @@ PHP_FUNCTION(snmp_set_output_option)
 }
 /* }}} */
 
+/* Map a Snmp\OidOutput case id to the Net-SNMP NETSNMP_OID_OUTPUT_* value, or -1. */
+static int php_snmp_oid_output_format(zend_long format)
+{
+	switch (format) {
+		case ZEND_ENUM_Snmp_OidOutput_Suffix:
+			return NETSNMP_OID_OUTPUT_SUFFIX;
+		case ZEND_ENUM_Snmp_OidOutput_Module:
+			return NETSNMP_OID_OUTPUT_MODULE;
+		case ZEND_ENUM_Snmp_OidOutput_Full:
+			return NETSNMP_OID_OUTPUT_FULL;
+		case ZEND_ENUM_Snmp_OidOutput_Numeric:
+			return NETSNMP_OID_OUTPUT_NUMERIC;
+		case ZEND_ENUM_Snmp_OidOutput_Ucd:
+			return NETSNMP_OID_OUTPUT_UCD;
+		case ZEND_ENUM_Snmp_OidOutput_None:
+			return NETSNMP_OID_OUTPUT_NONE;
+		default:
+			return -1;
+	}
+}
+
 /* {{{ Set the OID output format. */
 PHP_FUNCTION(snmp_set_oid_output_format)
 {
@@ -1781,32 +1802,114 @@ PHP_FUNCTION(snmp_set_oid_output_format)
 		format = zend_enum_fetch_case_id(format_object);
 	}
 
-	switch (format) {
-		case ZEND_ENUM_Snmp_OidOutput_Suffix:
-			snmp_format = NETSNMP_OID_OUTPUT_SUFFIX;
-			break;
-		case ZEND_ENUM_Snmp_OidOutput_Module:
-			snmp_format = NETSNMP_OID_OUTPUT_MODULE;
-			break;
-		case ZEND_ENUM_Snmp_OidOutput_Full:
-			snmp_format = NETSNMP_OID_OUTPUT_FULL;
-			break;
-		case ZEND_ENUM_Snmp_OidOutput_Numeric:
-			snmp_format = NETSNMP_OID_OUTPUT_NUMERIC;
-			break;
-		case ZEND_ENUM_Snmp_OidOutput_Ucd:
-			snmp_format = NETSNMP_OID_OUTPUT_UCD;
-			break;
-		case ZEND_ENUM_Snmp_OidOutput_None:
-			snmp_format = NETSNMP_OID_OUTPUT_NONE;
-			break;
-		default:
-			zend_argument_value_error(1, "must be a Snmp\\OidOutput constant");
-			RETURN_THROWS();
+	snmp_format = php_snmp_oid_output_format(format);
+	if (snmp_format < 0) {
+		zend_argument_value_error(1, "must be a Snmp\\OidOutput constant");
+		RETURN_THROWS();
 	}
 
 	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_OID_OUTPUT_FORMAT, snmp_format);
 	RETURN_TRUE;
+}
+/* }}} */
+
+/* Parse one OID with the current MIB tree, the same way get/walk do
+ * (numeric or full textual path first, then a bare or MODULE::name lookup
+ * anywhere in the tree, like snmptranslate -IR), and print it in the current
+ * OID output format. */
+static zend_string *php_snmp_translate_oid(const zend_string *object_id)
+{
+	oid name[MAX_OID_LEN];
+	size_t name_length = MAX_OID_LEN;
+	u_char *buf = NULL;
+	size_t buf_len = 0, out_len = 0;
+	zend_string *result = NULL;
+
+	/* MODULE::name loads MODULE into the MIB tree; undo that at request end. */
+	if (strstr(ZSTR_VAL(object_id), "::") != NULL) {
+		mib_needs_reset = 1;
+	}
+
+	if (!snmp_parse_oid(ZSTR_VAL(object_id), name, &name_length)) {
+		php_error_docref(NULL, E_WARNING, "Invalid object identifier: %s", ZSTR_VAL(object_id));
+		return NULL;
+	}
+
+	if (sprint_realloc_objid(&buf, &buf_len, &out_len, 1, name, name_length)) {
+		result = zend_string_init((char *) buf, out_len, false);
+	} else {
+		php_error_docref(NULL, E_WARNING, "Could not print object identifier: %s", ZSTR_VAL(object_id));
+	}
+	free(buf);
+
+	return result;
+}
+
+/* {{{ Translate OIDs between numeric and textual forms using the loaded MIBs. */
+PHP_FUNCTION(snmp_translate)
+{
+	zend_string *oid_str = NULL;
+	HashTable *oid_ht = NULL;
+	zend_object *format_object = NULL;
+	int saved_format;
+
+	ZEND_PARSE_PARAMETERS_START(1, 2)
+		Z_PARAM_ARRAY_HT_OR_STR(oid_ht, oid_str)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(format_object, SnmpOidOutput_ce)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (oid_ht) {
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(oid_ht, val) {
+			ZVAL_DEREF(val);
+			if (Z_TYPE_P(val) != IS_STRING) {
+				zend_argument_type_error(1, "must contain only strings, %s given", zend_zval_value_name(val));
+				RETURN_THROWS();
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	saved_format = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_OID_OUTPUT_FORMAT);
+
+	if (format_object != NULL) {
+		netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_OID_OUTPUT_FORMAT,
+			php_snmp_oid_output_format(zend_enum_fetch_case_id(format_object)));
+	}
+
+	if (oid_str) {
+		zend_string *result = php_snmp_translate_oid(oid_str);
+		if (result) {
+			RETVAL_STR(result);
+		} else {
+			RETVAL_FALSE;
+		}
+	} else {
+		zend_ulong idx;
+		zend_string *key;
+		zval *val;
+
+		array_init_size(return_value, zend_hash_num_elements(oid_ht));
+		ZEND_HASH_FOREACH_KEY_VAL(oid_ht, idx, key, val) {
+			zval entry;
+			zend_string *result;
+
+			ZVAL_DEREF(val);
+			result = php_snmp_translate_oid(Z_STR_P(val));
+			if (result) {
+				ZVAL_STR(&entry, result);
+			} else {
+				ZVAL_FALSE(&entry);
+			}
+			if (key) {
+				zend_hash_update(Z_ARRVAL_P(return_value), key, &entry);
+			} else {
+				zend_hash_index_update(Z_ARRVAL_P(return_value), idx, &entry);
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_OID_OUTPUT_FORMAT, saved_format);
 }
 /* }}} */
 

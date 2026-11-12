@@ -16,6 +16,7 @@ It also adds the following, which upstream does not have:
 | SHA-224 and SHA-384 SNMPv3 authentication | `"SHA224"`, `"SHA384"` in `setSecurity()` / `snmp3_*()` |
 | Don't apply MIB display hints (Net-SNMP `-Ih`) | `SNMP::$no_display_hint`, `Snmp\Output::NoDisplayHint` |
 | TCP transport | `tcp:host[:port]`, `tcp6:[addr][:port]` (and `udp:`, `udp6:`) in the hostname |
+| Translate OIDs with the loaded MIBs, no agent needed (like `snmptranslate -IR`) | `snmp_translate(array\|string $object_id, ?Snmp\OidOutput $format = null): array\|string\|false` |
 
 `phpversion('snmp')` returns `1.0.0`, not the PHP version. Use that, or
 `property_exists(SNMP::class, 'use_bulk')`, to detect this build.
