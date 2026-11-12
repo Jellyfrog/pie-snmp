@@ -13,6 +13,7 @@ It also adds the following, which upstream does not have:
 | Feature | API |
 |---|---|
 | Turn off GETBULK in walks (GETNEXT is used instead) | `SNMP::$use_bulk` (default `true`) |
+| Translate OIDs with the loaded MIBs, no agent needed (like `snmptranslate -IR`); `false`, without a warning, for an OID that cannot be translated | `snmp_translate(array\|string $object_id, ?Snmp\OidOutput $format = null): array\|string\|false` |
 
 SNMPv3 algorithms (`setSecurity()`, `snmp3_*()`):
 

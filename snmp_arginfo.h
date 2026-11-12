@@ -1,5 +1,5 @@
 /* This is a generated file, edit snmp.stub.php instead.
- * Stub hash: 7c31e716d683f45cbeb6c67a9fc762cc0b649d85
+ * Stub hash: bad97fe166aa4d663f82b48dde7bfeb8fd63221e
  * Has decl header: yes */
 
 #include "zend_attributes.h"
@@ -137,6 +137,11 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_snmp_init_mib, 0, 1, IS_VOID, 0)
 	ZEND_ARG_TYPE_INFO(0, mibdirs, IS_STRING, 1)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_snmp_translate, 0, 1, MAY_BE_ARRAY|MAY_BE_STRING|MAY_BE_FALSE)
+	ZEND_ARG_TYPE_MASK(0, object_id, MAY_BE_ARRAY|MAY_BE_STRING, NULL)
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, format, Snmp\\OidOutput, 1, "null")
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_SNMP___construct, 0, 0, 3)
 	ZEND_ARG_TYPE_INFO(0, version, IS_LONG, 0)
 	ZEND_ARG_TYPE_INFO(0, hostname, IS_STRING, 0)
@@ -220,6 +225,7 @@ ZEND_FUNCTION(snmp_set_valueretrieval);
 ZEND_FUNCTION(snmp_get_valueretrieval);
 ZEND_FUNCTION(snmp_read_mib);
 ZEND_FUNCTION(snmp_init_mib);
+ZEND_FUNCTION(snmp_translate);
 ZEND_METHOD(SNMP, __construct);
 ZEND_METHOD(SNMP, close);
 ZEND_METHOD(SNMP, setSecurity);
@@ -261,6 +267,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_FE(snmp_get_valueretrieval, arginfo_snmp_get_valueretrieval)
 	ZEND_FE(snmp_read_mib, arginfo_snmp_read_mib)
 	ZEND_FE(snmp_init_mib, arginfo_snmp_init_mib)
+	ZEND_FE(snmp_translate, arginfo_snmp_translate)
 	ZEND_FE_END
 };
 

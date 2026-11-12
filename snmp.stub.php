@@ -201,6 +201,9 @@ namespace
 
     function snmp_init_mib(?string $mibdirs): void {}
 
+    /** @refcount 1 */
+    function snmp_translate(array|string $object_id, ?Snmp\OidOutput $format = null): array|string|false {}
+
     /** @not-serializable */
     class SNMP
     {
