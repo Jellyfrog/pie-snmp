@@ -16,7 +16,9 @@
  * modules the new list does not need and loads the missing ones.
  *
  * Modules kept: the requested modules that are loaded, plus everything they
- * import, transitively. Everything else that is loaded (modules of the old
+ * import or read for MODULE-COMPLIANCE MODULE and AGENT-CAPABILITIES SUPPORTS
+ * clauses (struct module deps, patches/0006), and the other modules in the
+ * same file (reading a file loads every module in it), transitively. Everything else that is loaded (modules of the old
  * list, modules loaded on demand by MODULE::name lookups, files read with
  * read_mib()) is unloaded, so the tree matches a fresh build of the new list.
  *
@@ -25,7 +27,10 @@
  * leaves them in place. So it also rebuilds when a module to unload owns
  * the attributes of a node that a kept module still defines, and when, after
  * the switch, a node's attributes come from another module than in a fresh
- * build, which reads the modules in list order, each after its imports.
+ * build, which reads the modules in list order, each after its imports, and
+ * when a node of an unloaded module stays behind as the parent of a kept one,
+ * when a lookup by name finds another of several nodes with that name, and
+ * when nodes with several names for one OID are in another order.
  *
  * It falls back to a full rebuild when anything other than the list differs
  * from the last full build: the MIB directories, the MIB parser options,
@@ -153,6 +158,15 @@ static void keep_with_imports(char *keep, int nmods, int modid)
 	for (i = 0; i < mp->no_imports; i++) {
 		keep_with_imports(keep, nmods, mp->imports[i].modid);
 	}
+	for (i = 0; i < mp->no_deps; i++) {
+		keep_with_imports(keep, nmods, mp->deps[i]);
+	}
+	for (i = 0; i < nmods; i++) {
+		struct module *other = find_module(i);
+		if (i != modid && is_loaded(other) && other->file && mp->file && strcmp(other->file, mp->file) == 0) {
+			keep_with_imports(keep, nmods, i);
+		}
+	}
 }
 
 /* Would unloading the modules marked in drop leave a node with attributes
@@ -179,8 +193,9 @@ static bool leaves_stale_nodes(struct tree *tp, const char *drop, int nmods, boo
 	return false;
 }
 
-/* Number the modules in the order a fresh build reads them: the list in
- * order, each module after its imports (in IMPORTS order). */
+/* Number the modules in the order a fresh build links their nodes into the
+ * tree: the list in order, each module after its imports (in IMPORTS order)
+ * and the modules its MODULE and SUPPORTS clauses read. */
 static void rank_module(int modid, int *rank, int nmods, int *next)
 {
 	struct module *mp;
@@ -195,15 +210,95 @@ static void rank_module(int modid, int *rank, int nmods, int *next)
 		for (i = 0; i < mp->no_imports; i++) {
 			rank_module(mp->imports[i].modid, rank, nmods, next);
 		}
+		for (i = 0; i < mp->no_deps; i++) {
+			rank_module(mp->deps[i], rank, nmods, next);
+		}
 	}
 	rank[modid] = (*next)++;
 }
 
 /* Does every node that several modules define have the attributes of the
  * module a fresh build would read first (last with MIB_REPLACE)? */
+struct sibling {
+	u_long subid;
+	int pos, rank;
+};
+
+static int sibling_cmp(const void *a, const void *b)
+{
+	const struct sibling *x = a, *y = b;
+	if (x->subid != y->subid) {
+		return x->subid < y->subid ? -1 : 1;
+	}
+	return x->pos - y->pos;
+}
+
+/* Siblings with the same subid (one OID, several names): a lookup by OID
+ * finds the first. Each new node goes before the existing ones, so in a
+ * fresh build the module read last comes first. */
+static bool sibling_order_matches_fresh(struct tree *first, const int *rank, int nmods)
+{
+	struct tree *tp;
+	struct sibling *v;
+	int n = 0, i;
+	bool ok = true;
+
+	for (tp = first; tp; tp = tp->next_peer) {
+		n++;
+	}
+	if (n < 2) {
+		return true;
+	}
+	v = malloc(n * sizeof(*v));
+	if (!v) {
+		return false;
+	}
+	for (i = 0, tp = first; tp; tp = tp->next_peer, i++) {
+		v[i].subid = tp->subid;
+		v[i].pos = i;
+		v[i].rank = tp->modid >= 0 && tp->modid < nmods ? rank[tp->modid] : -1;
+	}
+	qsort(v, n, sizeof(*v), sibling_cmp);
+	for (i = 1; i < n && ok; i++) {
+		if (v[i].subid == v[i - 1].subid
+				&& (v[i].rank < 0 || v[i - 1].rank < 0 || v[i].rank == INT_MAX
+					|| v[i - 1].rank == INT_MAX || v[i - 1].rank < v[i].rank)) {
+			ok = false;
+		}
+	}
+	free(v);
+	return ok;
+}
+
 static bool owners_match_fresh(struct tree *tp, const int *rank, int nmods, bool replace)
 {
+	if (!sibling_order_matches_fresh(tp, rank, nmods)) {
+		return false;
+	}
 	for (; tp; tp = tp->next_peer) {
+		/* Unloading keeps a node without modules while it has children; a
+		 * fresh build never has one (it would make the parent anonymous). */
+		if (tp->number_modules == 0) {
+			return false;
+		}
+		/* A node left without modules and then defined again keeps the
+		 * modid -1 that unloading gave it. */
+		if (tp->modid != tp->module_list[0]) {
+			return false;
+		}
+		/* A lookup by name returns the node read last (each new node goes
+		 * to the front of its hash chain): a fresh build finds the one of
+		 * the module it reads last, a switched tree may find a kept one. */
+		if (tp->label) {
+			struct tree *found = find_tree_node(tp->label, -1);
+			if (found && found != tp) {
+				int a = tp->modid, b = found->modid;
+				if (a < 0 || a >= nmods || b < 0 || b >= nmods || rank[a] < 0 || rank[b] < 0
+						|| rank[a] == INT_MAX || rank[b] == INT_MAX || rank[a] > rank[b]) {
+					return false;
+				}
+			}
+		}
 		if (tp->number_modules > 1) {
 			int i, best = -1;
 			for (i = 0; i < tp->number_modules; i++) {
@@ -215,7 +310,7 @@ static bool owners_match_fresh(struct tree *tp, const int *rank, int nmods, bool
 					best = m;
 				}
 			}
-			if (tp->module_list[replace ? tp->number_modules - 1 : 0] != best || tp->modid != tp->module_list[0]) {
+			if (tp->module_list[replace ? tp->number_modules - 1 : 0] != best) {
 				return false;
 			}
 		}

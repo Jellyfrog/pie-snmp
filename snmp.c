@@ -2196,6 +2196,9 @@ PHP_FUNCTION(snmp_read_mib)
 
 	php_snmp_load_mib_tree();
 	mib_needs_reset = 1;
+	/* read_mib() can point a module at another file than the MIB directories
+	 * give, which a later in-place switch would keep: rebuild next time. */
+	php_snmp_mib_forget();
 	if (!read_mib(filename)) {
 		char *error = strerror(errno);
 		php_error_docref(NULL, E_WARNING, "Error while reading MIB file '%s': %s", filename, error);
