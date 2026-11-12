@@ -1,0 +1,815 @@
+From b3574426e61e009cc5a41fd2e9d11f18d205be49 Mon Sep 17 00:00:00 2001
+From: Jellyfrog <Jellyfrog@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 18:23:45 +0100
+Subject: [PATCH] libsnmp: Add a cache of parsed MIB files
+
+Rebuilding the MIB tree for another list of modules (shutdown_mib(),
+init_mib()) parses every module file again, including the ones that
+every list shares. With netsnmp_mib_cache_enable(1), what parsing a file
+did is recorded, and reading the file again replays it instead of
+parsing: module starts, IMPORTS (read again, through the cache), modules
+read for MODULE and SUPPORTS clauses, textual conventions, and the
+nodes, which are linked into the tree as after parsing.
+
+Entries are keyed by file path, mtime and size, MIB directories and
+parser options. Files that fail to parse, and files whose parse looks up
+a textual convention imported from a module that is not found, are not
+cached.
+
+parse_imports() is split into tokenizing and process_imports() so that
+replaying an IMPORTS clause runs the same code.
+---
+ include/net-snmp/library/parse.h |   4 +
+ snmplib/parse.c                  | 634 +++++++++++++++++++++++++++++--
+ 2 files changed, 604 insertions(+), 34 deletions(-)
+
+diff --git a/include/net-snmp/library/parse.h b/include/net-snmp/library/parse.h
+index 48b72077ea..9e106a6bc6 100644
+--- a/include/net-snmp/library/parse.h
++++ b/include/net-snmp/library/parse.h
+@@ -229,6 +229,10 @@ SOFTWARE.
+     struct module  *find_module(int);
+     void            adopt_orphans(void);
+     NETSNMP_IMPORT
++    void            netsnmp_mib_cache_enable(int enable);
++    NETSNMP_IMPORT
++    void            netsnmp_mib_cache_clear(void);
++    NETSNMP_IMPORT
+     char           *snmp_mib_toggle_options(char *options);
+     NETSNMP_IMPORT
+     void            snmp_mib_toggle_options_usage(const char *lead,
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index d66f10432c..903687f97c 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -572,6 +572,15 @@ static struct node *parse_objectid(FILE *, char *);
+ static int      get_tc(const char *, int, int *, struct enum_list **,
+                        struct range_list **, char **);
+ static int      get_tc_index(const char *, int);
++struct tc;
++static void     mc_record_module(const char *);
++static void     mc_record_imports(char **, const int *, char **, int, int);
++static void     mc_record_read(const char *);
++static void     mc_record_tc(const struct tc *);
++static void     mc_record_nodes(struct node *);
++static void     mc_uncacheable(void);
++static void     process_imports(char **, const int *, char **, int, int, int);
++static void     new_module(const char *, const char *);
+ static struct enum_list *parse_enumlist(FILE *, struct enum_list **);
+ static struct range_list *parse_ranges(FILE * fp, struct range_list **);
+ static struct node *parse_asntype(FILE *, char *, int *, char *);
+@@ -2551,6 +2560,8 @@ get_tc_index(const char *descriptor, int modid)
+         }
+ 
+ 
++    if (modid == -1)
++        mc_uncacheable();
+     for (i = 0, tcp = tclist; i < tc_alloc; i++, tcp++) {
+         if (tcp->type == 0)
+             break;
+@@ -2943,6 +2954,7 @@ parse_asntype(FILE * fp, char *name, int *ntype, char *ntoken)
+             tcp->enums = parse_enumlist(fp, &tcp->enums);
+             *ntype = get_token(fp, ntoken, MAXTOKEN);
+         }
++        mc_record_tc(tcp);
+         return NULL;
+     }
+ 
+@@ -3680,6 +3692,7 @@ parse_compliance(FILE * fp, char *name)
+                     print_error("Unknown module", token, type);
+                     goto skip;
+                 }
++                mc_record_read(token);
+                 modid = which_module(token);
+             }
+             type = get_token(fp, token, MAXTOKEN);
+@@ -3834,6 +3847,7 @@ parse_capabilities(FILE * fp, char *name)
+             print_error("Module not found", token, type);
+             goto skip;
+         }
++        mc_record_read(token);
+         modid = which_module(token);
+         type = get_token(fp, token, MAXTOKEN);
+         if (type != INCLUDES) {
+@@ -4143,16 +4157,23 @@ parse_imports(FILE * fp)
+ {
+     register int    type;
+     char            token[MAXTOKEN];
+-    char            modbuf[256];
+ #define MAX_IMPORTS	512
+-    struct module_import *import_list;
+-    int             this_module;
+-    struct module  *mp;
+-
++    char          **labels;     /* imported descriptors */
++    int            *groups;     /* per descriptor: index into names, or -1 */
++    char          **names;      /* module of each FROM clause */
+     int             import_count = 0;   /* Total number of imported descriptors */
+-    int             i = 0, old_i;       /* index of first import from each module */
+-
+-    import_list = malloc(MAX_IMPORTS * sizeof(*import_list));
++    int             ngroups = 0;
++    int             i = 0, save = 1;    /* index of first import of the next FROM */
++
++    labels = malloc(MAX_IMPORTS * sizeof(*labels));
++    groups = malloc(MAX_IMPORTS * sizeof(*groups));
++    names = malloc(MAX_IMPORTS * sizeof(*names));
++    if (!labels || !groups || !names) {
++        free(labels);
++        free(groups);
++        free(names);
++        return;
++    }
+ 
+     type = get_token(fp, token, MAXTOKEN);
+ 
+@@ -4166,38 +4187,85 @@ parse_imports(FILE * fp)
+                 do {
+                     type = get_token(fp, token, MAXTOKEN);
+                 } while (type != SEMI && type != ENDOFFILE);
+-                goto out;
++                save = 0;
++                break;
+             }
+-            import_list[import_count++].label = strdup(token);
++            groups[import_count] = -1;
++            labels[import_count++] = strdup(token);
+         } else if (type == FROM) {
+             type = get_token(fp, token, MAXTOKEN);
+             if (import_count == i) {    /* All imports are handled internally */
+                 type = get_token(fp, token, MAXTOKEN);
+                 continue;
+             }
+-            this_module = which_module(token);
++            names[ngroups] = strdup(token);
++            for (; i < import_count; ++i)
++                groups[i] = ngroups;
++            ngroups++;
++        }
++        type = get_token(fp, token, MAXTOKEN);
++    }
++
++    if (save)
++        mc_record_imports(labels, groups, names, import_count, ngroups);
++    else
++        mc_uncacheable();
++    process_imports(labels, groups, names, import_count, ngroups, save);
++
++    for (i = 0; i < import_count; ++i)
++        free(labels[i]);
++    for (i = 0; i < ngroups; ++i)
++        free(names[i]);
++    free(labels);
++    free(groups);
++    free(names);
++}
++
++/*
++ * Read the modules of an IMPORTS clause, in order, and save the imported
++ * descriptors in the current module (unless save is 0). Takes over the
++ * labels it saves (sets them to NULL).
++ */
++static void
++process_imports(char **labels, const int *groups, char **names,
++                int import_count, int ngroups, int save)
++{
++    char            modbuf[256];
++    struct module_import *import_list;
++    struct module  *mp;
++    int             g, i, this_module;
++
++    import_list = calloc(import_count ? import_count : 1, sizeof(*import_list));
++    if (import_list == NULL)
++        return;
++    for (i = 0; i < import_count; ++i) {
++        import_list[i].label = labels[i];
++        /* Initialize modid in case the module name was missing. */
++        import_list[i].modid = -1;
++    }
++
++    for (g = 0; g < ngroups; ++g) {
++        int             found = 0;
+ 
+-            for (old_i = i; i < import_count; ++i)
++        this_module = which_module(names[g]);
++        for (i = 0; i < import_count; ++i)
++            if (groups[i] == g)
+                 import_list[i].modid = this_module;
+ 
+-            /*
+-             * Recursively read any pre-requisite modules
+-             */
+-            if (read_module_internal(token) == MODULE_NOT_FOUND) {
+-		int found = 0;
+-                for (; old_i < import_count; ++old_i) {
+-                    found += read_import_replacements(token, &import_list[old_i]);
+-                }
+-		if (!found)
+-		    print_module_not_found(token);
+-            }
++        /*
++         * Recursively read any pre-requisite modules
++         */
++        if (read_module_internal(names[g]) == MODULE_NOT_FOUND) {
++            for (i = 0; i < import_count; ++i)
++                if (groups[i] == g)
++                    found += read_import_replacements(names[g], &import_list[i]);
++            if (!found)
++                print_module_not_found(names[g]);
+         }
+-        type = get_token(fp, token, MAXTOKEN);
+     }
+ 
+-    /* Initialize modid in case the module name was missing. */
+-    for (; i < import_count; ++i)
+-        import_list[i].modid = -1;
++    if (!save || import_count == 0)
++        goto out;
+ 
+     /*
+      * Save the import information
+@@ -4205,8 +4273,6 @@ parse_imports(FILE * fp)
+      */
+     for (mp = module_head; mp; mp = mp->next) {
+         if (mp->modid == current_module) {
+-            if (import_count == 0)
+-                goto out;
+             if (mp->imports && (mp->imports != root_imports)) {
+                 /*
+                  * this can happen if all modules are in one source file. 
+@@ -4227,8 +4293,7 @@ parse_imports(FILE * fp)
+                 goto out;
+             }
+             for (i = 0; i < import_count; ++i) {
+-                mp->imports[i].label = import_list[i].label;
+-                import_list[i].label = NULL;
++                mp->imports[i].label = strdup(import_list[i].label);
+                 mp->imports[i].modid = import_list[i].modid;
+                 DEBUGMSGTL(("parse-mibs",
+                             "#### adding Module %d '%s' %d\n", mp->modid,
+@@ -4245,10 +4310,7 @@ parse_imports(FILE * fp)
+     print_module_not_found(module_name(current_module, modbuf));
+ 
+ out:
+-    for (i = 0; i < import_count; ++i)
+-        free(import_list[i].label);
+     free(import_list);
+-    return;
+ }
+ 
+ 
+@@ -4397,6 +4459,482 @@ read_import_replacements(const char *old_module_name,
+     return read_module_replacements(old_module_name);
+ }
+ 
++/*
++ * MIB cache
++ *
++ * Reading a module file parses its text. With the cache enabled
++ * (netsnmp_mib_cache_enable()), what parsing a file did is recorded, and
++ * reading the file again replays that instead of parsing: the start of each
++ * module, its IMPORTS (the imported modules are read again, through the
++ * cache), modules read for MODULE-COMPLIANCE MODULE and AGENT-CAPABILITIES
++ * SUPPORTS clauses, its textual conventions and its nodes, which are linked
++ * into the tree by do_linkup() as after parsing. The tree is the same as
++ * after parsing, so the tree can be rebuilt (shutdown_mib(), init_mib())
++ * for another list of modules without parsing the files again.
++ *
++ * An entry is used for the same file (path, mtime and size), MIB directories
++ * (they decide which file an imported module is read from) and parser
++ * options. Files that failed to parse, and files whose parse looked up a
++ * textual convention imported from a module that was not found (that
++ * matches whatever module is loaded), are not cached.
++ */
++#define MC_MODULE  1
++#define MC_IMPORTS 2
++#define MC_READ    3
++#define MC_TC      4
++#define MC_NODES   5
++
++struct mc_node {
++    struct node     node;           /* tc_index is not used */
++    char           *tc_descriptor;  /* the node's textual convention */
++    char           *tc_module;
++};
++
++struct mc_event {
++    int             kind;
++    char           *name;           /* MC_MODULE, MC_READ */
++    int             count;          /* MC_IMPORTS, MC_NODES */
++    char          **labels;         /* MC_IMPORTS */
++    int            *groups;
++    char          **names;
++    int             ngroups;
++    struct tc       tc;             /* MC_TC */
++    struct mc_node *nodes;          /* MC_NODES */
++    struct mc_event *next;
++};
++
++struct mc_entry {
++    char           *file;
++    char           *mibdirs;
++    time_t          mtime;
++    off_t           size;
++    int             options;
++    int             bad;
++    struct mc_event *events, **tail;
++    struct mc_entry *next;
++};
++
++static int      mc_enabled;
++static struct mc_entry *mc_head;
++static struct mc_entry *mc_rec;         /* the entry being recorded */
++
++static int
++mc_options(void)
++{
++    return netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_PARSE_LABEL)
++        | netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_COMMENT_TERM) << 1
++        | netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_SAVE_MIB_DESCRS) << 2;
++}
++
++static struct index_list *
++mc_copy_indexes(const struct index_list *sp)
++{
++    struct index_list *head = NULL, **tail = &head;
++
++    for (; sp; sp = sp->next) {
++        *tail = calloc(1, sizeof(**tail));
++        if (!*tail)
++            break;
++        (*tail)->ilabel = sp->ilabel ? strdup(sp->ilabel) : NULL;
++        (*tail)->isimplied = sp->isimplied;
++        tail = &(*tail)->next;
++    }
++    return head;
++}
++
++static struct varbind_list *
++mc_copy_varbinds(const struct varbind_list *sp)
++{
++    struct varbind_list *head = NULL, **tail = &head;
++
++    for (; sp; sp = sp->next) {
++        *tail = calloc(1, sizeof(**tail));
++        if (!*tail)
++            break;
++        (*tail)->vblabel = sp->vblabel ? strdup(sp->vblabel) : NULL;
++        tail = &(*tail)->next;
++    }
++    return head;
++}
++
++static char *
++mc_strdup(const char *s)
++{
++    return s ? strdup(s) : NULL;
++}
++
++static void
++mc_copy_node(struct node *dst, const struct node *src)
++{
++    memset(dst, 0, sizeof(*dst));
++    dst->label = mc_strdup(src->label);
++    dst->subid = src->subid;
++    dst->modid = src->modid;
++    dst->parent = mc_strdup(src->parent);
++    dst->tc_index = -1;
++    dst->type = src->type;
++    dst->access = src->access;
++    dst->status = src->status;
++    dst->enums = copy_enums(NETSNMP_REMOVE_CONST(struct enum_list *, src->enums));
++    dst->ranges = copy_ranges(NETSNMP_REMOVE_CONST(struct range_list *, src->ranges));
++    dst->indexes = mc_copy_indexes(src->indexes);
++    dst->augments = mc_strdup(src->augments);
++    dst->varbinds = mc_copy_varbinds(src->varbinds);
++    dst->hint = mc_strdup(src->hint);
++    dst->units = mc_strdup(src->units);
++    dst->description = mc_strdup(src->description);
++    dst->reference = mc_strdup(src->reference);
++    dst->defaultValue = mc_strdup(src->defaultValue);
++    dst->filename = mc_strdup(src->filename);
++    dst->lineno = src->lineno;
++}
++
++/* Free the contents of a node, not the node */
++static void
++mc_clear_node(struct node *np)
++{
++    free_enums(&np->enums);
++    free_ranges(&np->ranges);
++    free_indexes(&np->indexes);
++    free_varbinds(&np->varbinds);
++    free(np->label);
++    free(np->hint);
++    free(np->units);
++    free(np->description);
++    free(np->reference);
++    free(np->defaultValue);
++    free(np->parent);
++    free(np->augments);
++    free(np->filename);
++}
++
++static void
++mc_free_entry(struct mc_entry *e)
++{
++    struct mc_event *ev, *next;
++    int             i;
++
++    if (!e)
++        return;
++    for (ev = e->events; ev; ev = next) {
++        next = ev->next;
++        free(ev->name);
++        for (i = 0; ev->kind == MC_IMPORTS && i < ev->count; i++)
++            free(ev->labels[i]);
++        for (i = 0; ev->kind == MC_IMPORTS && i < ev->ngroups; i++)
++            free(ev->names[i]);
++        free(ev->labels);
++        free(ev->groups);
++        free(ev->names);
++        if (ev->kind == MC_TC) {
++            free_enums(&ev->tc.enums);
++            free_ranges(&ev->tc.ranges);
++            free(ev->tc.descriptor);
++            free(ev->tc.hint);
++            free(ev->tc.description);
++        }
++        for (i = 0; ev->kind == MC_NODES && i < ev->count; i++) {
++            mc_clear_node(&ev->nodes[i].node);
++            free(ev->nodes[i].tc_descriptor);
++            free(ev->nodes[i].tc_module);
++        }
++        free(ev->nodes);
++        free(ev);
++    }
++    free(e->file);
++    free(e->mibdirs);
++    free(e);
++}
++
++void
++netsnmp_mib_cache_clear(void)
++{
++    struct mc_entry *e, *next;
++
++    for (e = mc_head; e; e = next) {
++        next = e->next;
++        mc_free_entry(e);
++    }
++    mc_head = NULL;
++}
++
++void
++netsnmp_mib_cache_enable(int enable)
++{
++    mc_enabled = enable;
++    if (!enable)
++        netsnmp_mib_cache_clear();
++}
++
++static void
++mc_uncacheable(void)
++{
++    if (mc_rec)
++        mc_rec->bad = 1;
++}
++
++static struct mc_event *
++mc_add(int kind)
++{
++    struct mc_event *ev;
++
++    if (!mc_rec || mc_rec->bad)
++        return NULL;
++    ev = calloc(1, sizeof(*ev));
++    if (!ev) {
++        mc_rec->bad = 1;
++        return NULL;
++    }
++    ev->kind = kind;
++    *mc_rec->tail = ev;
++    mc_rec->tail = &ev->next;
++    return ev;
++}
++
++static void
++mc_record_module(const char *name)
++{
++    struct mc_event *ev = mc_add(MC_MODULE);
++
++    if (ev && !(ev->name = strdup(name)))
++        mc_rec->bad = 1;
++}
++
++static void
++mc_record_read(const char *name)
++{
++    struct mc_event *ev = mc_add(MC_READ);
++
++    if (ev && !(ev->name = strdup(name)))
++        mc_rec->bad = 1;
++}
++
++static void
++mc_record_imports(char **labels, const int *groups, char **names,
++                  int count, int ngroups)
++{
++    struct mc_event *ev = mc_add(MC_IMPORTS);
++    int             i;
++
++    if (!ev)
++        return;
++    ev->labels = calloc(count ? count : 1, sizeof(char *));
++    ev->groups = calloc(count ? count : 1, sizeof(int));
++    ev->names = calloc(ngroups ? ngroups : 1, sizeof(char *));
++    if (!ev->labels || !ev->groups || !ev->names) {
++        mc_rec->bad = 1;
++        return;
++    }
++    ev->count = count;
++    ev->ngroups = ngroups;
++    for (i = 0; i < count; i++) {
++        ev->labels[i] = strdup(labels[i]);
++        ev->groups[i] = groups[i];
++    }
++    for (i = 0; i < ngroups; i++)
++        ev->names[i] = strdup(names[i]);
++}
++
++static void
++mc_record_tc(const struct tc *tcp)
++{
++    struct mc_event *ev = mc_add(MC_TC);
++
++    if (!ev)
++        return;
++    ev->tc.type = tcp->type;
++    ev->tc.descriptor = mc_strdup(tcp->descriptor);
++    ev->tc.hint = mc_strdup(tcp->hint);
++    ev->tc.enums = copy_enums(tcp->enums);
++    ev->tc.ranges = copy_ranges(tcp->ranges);
++    ev->tc.description = mc_strdup(tcp->description);
++    ev->tc.lineno = tcp->lineno;
++}
++
++static void
++mc_record_nodes(struct node *root)
++{
++    struct mc_event *ev;
++    struct node    *np;
++    struct module  *mp;
++    int             n = 0, i;
++
++    if (!mc_rec || mc_rec->bad)
++        return;
++    for (np = root; np; np = np->next)
++        n++;
++    ev = mc_add(MC_NODES);
++    if (!ev)
++        return;
++    ev->nodes = calloc(n ? n : 1, sizeof(*ev->nodes));
++    if (!ev->nodes) {
++        mc_rec->bad = 1;
++        return;
++    }
++    ev->count = n;
++    for (np = root, i = 0; np; np = np->next, i++) {
++        mc_copy_node(&ev->nodes[i].node, np);
++        if (np->tc_index >= 0 && np->tc_index < tc_alloc) {
++            mp = find_module(tclist[np->tc_index].modid);
++            ev->nodes[i].tc_descriptor = mc_strdup(tclist[np->tc_index].descriptor);
++            ev->nodes[i].tc_module = mp ? strdup(mp->name) : NULL;
++            if (!mp)
++                mc_rec->bad = 1;
++        }
++    }
++}
++
++static struct mc_entry *
++mc_find(const char *file, const struct stat *st)
++{
++    const char     *mibdirs = netsnmp_get_mib_directory();
++    int             options = mc_options();
++    struct mc_entry *e;
++
++    for (e = mc_head; e; e = e->next)
++        if (e->mtime == st->st_mtime && e->size == st->st_size
++            && e->options == options && !strcmp(e->file, file)
++            && !strcmp(e->mibdirs, mibdirs ? mibdirs : ""))
++            return e;
++    return NULL;
++}
++
++static struct mc_entry *
++mc_start(const char *file, const struct stat *st)
++{
++    const char     *mibdirs = netsnmp_get_mib_directory();
++    struct mc_entry *e = calloc(1, sizeof(*e));
++
++    if (!e)
++        return NULL;
++    e->file = strdup(file);
++    e->mibdirs = strdup(mibdirs ? mibdirs : "");
++    if (!e->file || !e->mibdirs) {
++        mc_free_entry(e);
++        return NULL;
++    }
++    e->mtime = st->st_mtime;
++    e->size = st->st_size;
++    e->options = mc_options();
++    e->tail = &e->events;
++    return e;
++}
++
++/* Add a textual convention as parse_asntype() does */
++static void
++mc_replay_tc(const struct tc *src)
++{
++    struct tc      *tcp = NULL;
++    int             i;
++
++    for (i = 0; i < tc_alloc; i++) {
++        if (tclist[i].type == 0) {
++            if (tcp == NULL)
++                tcp = &tclist[i];
++        } else if (strcmp(src->descriptor, tclist[i].descriptor) == 0 &&
++                   tclist[i].modid == current_module) {
++            snmp_log(LOG_ERR,
++                     "Duplicate TEXTUAL-CONVENTION '%s' at line %d in %s. First at line %d\n",
++                     src->descriptor, src->lineno, File, tclist[i].lineno);
++            erroneousMibs++;
++            return;
++        }
++    }
++    if (tcp == NULL) {
++        tclist = realloc(tclist, (tc_alloc + TC_INCR)*sizeof(struct tc));
++        memset(tclist+tc_alloc, 0, TC_INCR*sizeof(struct tc));
++        tcp = tclist + tc_alloc;
++        tc_alloc += TC_INCR;
++    }
++    tcp->modid = current_module;
++    tcp->descriptor = strdup(src->descriptor);
++    tcp->hint = mc_strdup(src->hint);
++    tcp->description = mc_strdup(src->description);
++    tcp->lineno = src->lineno;
++    tcp->type = src->type;
++    tcp->ranges = copy_ranges(src->ranges);
++    tcp->enums = copy_enums(src->enums);
++}
++
++static void
++mc_replay_nodes(const struct mc_event *ev)
++{
++    struct node    *root = NULL, **tail = &root, *np;
++    struct module  *mp;
++    int             i, j, modid;
++
++    for (i = 0; i < ev->count; i++) {
++        np = malloc(sizeof(*np));
++        if (!np)
++            break;
++        mc_copy_node(np, &ev->nodes[i].node);
++        np->modid = current_module;
++        if (ev->nodes[i].tc_descriptor) {
++            modid = ev->nodes[i].tc_module ? which_module(ev->nodes[i].tc_module) : -1;
++            for (j = 0; j < tc_alloc && tclist[j].type != 0; j++)
++                if (tclist[j].modid == modid &&
++                    !strcmp(tclist[j].descriptor, ev->nodes[i].tc_descriptor)) {
++                    np->tc_index = j;
++                    break;
++                }
++        }
++        *tail = np;
++        tail = &np->next;
++    }
++    for (mp = module_head; mp; mp = mp->next)
++        if (mp->modid == current_module)
++            break;
++    do_linkup(mp, root);
++}
++
++/* Do what parsing the file of e did */
++static void
++mc_replay(const struct mc_entry *e)
++{
++    const struct mc_event *ev;
++    struct module  *mp;
++    char          **labels;
++    int             i;
++
++    for (ev = e->events; ev; ev = ev->next) {
++        switch (ev->kind) {
++        case MC_MODULE:
++            current_module = which_module(ev->name);
++            if (current_module == -1) {
++                new_module(ev->name, File);
++                current_module = which_module(ev->name);
++            }
++            for (mp = module_head; mp; mp = mp->next) {
++                if (mp->modid == current_module) {
++                    if (mp->no_imports == -1)
++                        mp->no_imports = 0;
++                    break;
++                }
++            }
++            break;
++        case MC_IMPORTS:
++            /* process_imports() may take over the labels */
++            labels = malloc((ev->count ? ev->count : 1) * sizeof(char *));
++            if (!labels)
++                break;
++            for (i = 0; i < ev->count; i++)
++                labels[i] = ev->labels[i];
++            process_imports(labels, ev->groups, ev->names, ev->count, ev->ngroups, 1);
++            free(labels);
++            break;
++        case MC_READ:
++            (void) read_module_internal(ev->name);
++            break;
++        case MC_TC:
++            mc_replay_tc(&ev->tc);
++            break;
++        case MC_NODES:
++            mc_replay_nodes(ev);
++            break;
++        }
++    }
++}
++
+ static int
+ read_from_file(struct module *mp, const char *name)
+ {
+@@ -4406,12 +4944,27 @@ read_from_file(struct module *mp, const char *name)
+     FILE           *fp;
+     struct node    *np;
+     int             res;
++    struct stat     st;
++    struct mc_entry *e, *oldRec = mc_rec;
++    int             oldErrors = erroneousMibs;
+ 
+     if (mp->no_imports != -1) {
+         DEBUGMSGTL(("parse-mibs", "Module %s already loaded\n",
+                     name));
+         return MODULE_ALREADY_LOADED;
+     }
++    if (mc_enabled && stat(mp->file, &st) == 0
++        && (e = mc_find(mp->file, &st)) != NULL) {
++        mp->no_imports = 0; /* Note that we've read the file */
++        File = mp->file;
++        mibLine = 1;
++        current_module = mp->modid;
++        mc_replay(e);
++        File = oldFile;
++        mibLine = oldLine;
++        current_module = oldModule;
++        return MODULE_LOADED_OK;
++    }
+     if ((fp = fopen(mp->file, "r")) == NULL) {
+         int rval;
+         if (errno == ENOTDIR || errno == ENOENT)
+@@ -4428,6 +4981,7 @@ read_from_file(struct module *mp, const char *name)
+     File = mp->file;
+     mibLine = 1;
+     current_module = mp->modid;
++    mc_rec = mc_enabled && fstat(fileno(fp), &st) == 0 ? mc_start(mp->file, &st) : NULL;
+     /*
+      * Parse the file
+      */
+@@ -4441,6 +4995,16 @@ read_from_file(struct module *mp, const char *name)
+     current_module = oldModule;
+     res = !np && gMibError == MODULE_SYNTAX_ERROR ?
+         MODULE_SYNTAX_ERROR : MODULE_LOADED_OK;
++    if (mc_rec) {
++        if (res == MODULE_LOADED_OK && !np && !mc_rec->bad
++            && erroneousMibs == oldErrors) {
++            mc_rec->next = mc_head;
++            mc_head = mc_rec;
++        } else {
++            mc_free_entry(mc_rec);
++        }
++    }
++    mc_rec = oldRec;
+     while (np) {
+         struct node *nnp = np->next;
+         free_node(np);
+@@ -5111,6 +5675,7 @@ parse(FILE * fp)
+                 objgroups = NULL;
+                 objects = NULL;
+                 notifs = NULL;
++                mc_record_nodes(root);
+                 do_linkup(mp, root);
+                 np = root = NULL;
+                 label_table_clear(&labels);
+@@ -5216,6 +5781,7 @@ parse(FILE * fp)
+                     }
+                 }
+             }
++            mc_record_module(name);
+             DEBUGMSGTL(("parse-mibs", "Parsing MIB: %d %s\n",
+                         current_module, name));
+             while ((type = get_token(fp, token, MAXTOKEN)) != ENDOFFILE)
+-- 
+2.56.0
+

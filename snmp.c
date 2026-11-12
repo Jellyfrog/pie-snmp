@@ -32,7 +32,6 @@
 # define HAVE_ASPRINTF
 #endif
 #include "php_snmp.h"
-#include "php_snmp_mib.h"
 
 #include "zend_exceptions.h"
 #include "ext/spl/spl_exceptions.h"
@@ -66,6 +65,7 @@
 
 #include <net-snmp/net-snmp-config.h>
 #include <net-snmp/net-snmp-includes.h>
+#include <net-snmp/library/parse.h>
 
 #include "snmp_decl.h"
 #include "snmp_arginfo.h"
@@ -123,16 +123,22 @@ static void php_snmp_setenv(const char *name, const char *value)
  * (see php_snmp_mib.c). */
 static void php_snmp_build_mib_tree(const char *mibs)
 {
+	char *saved = NULL;
+
+	shutdown_mib();
 	if (mibs) {
-		php_snmp_mib_switch(mibs);
-	} else {
-		php_snmp_mib_forget();
-		shutdown_mib();
+		const char *env = getenv("MIBS");
+		saved = env ? strdup(env) : NULL;
+		php_snmp_setenv("MIBS", mibs);
+	}
 #ifdef HAVE_NETSNMP_INIT_MIB
-		netsnmp_init_mib();
+	netsnmp_init_mib();
 #else
-		init_mib();
+	init_mib();
 #endif
+	if (mibs) {
+		php_snmp_setenv("MIBS", saved);
+		free(saved);
 	}
 	mib_tree_loaded = true;
 }
@@ -1691,6 +1697,10 @@ static void php_snmp_init(void)
 		zend_reset_lc_ctype_locale();
 	}
 
+	/* Parse each MIB file once per process: rebuilding the MIB tree replays
+	 * the parsed files (patches/0004). */
+	netsnmp_mib_cache_enable(1);
+
 #ifdef NETSNMP_DS_LIB_DONT_PERSIST_STATE
 	/* Prevent update of the snmpapp.conf file */
 	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_DONT_PERSIST_STATE, 1);
@@ -2196,9 +2206,6 @@ PHP_FUNCTION(snmp_read_mib)
 
 	php_snmp_load_mib_tree();
 	mib_needs_reset = 1;
-	/* read_mib() can point a module at another file than the MIB directories
-	 * give, which a later in-place switch would keep: rebuild next time. */
-	php_snmp_mib_forget();
 	if (!read_mib(filename)) {
 		char *error = strerror(errno);
 		php_error_docref(NULL, E_WARNING, "Error while reading MIB file '%s': %s", filename, error);
@@ -2965,7 +2972,6 @@ static PHP_RSHUTDOWN_FUNCTION(snmp)
 		shutdown_mib();
 		netsnmp_ds_set_string(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIBDIRS, NULL);
 		mib_tree_loaded = false;
-		php_snmp_mib_forget();
 		mib_needs_reset = 0;
 	}
 

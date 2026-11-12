@@ -1,30 +1,32 @@
 /*
- * Checks that php_snmp_mib_switch() (php_snmp_mib.c) gives the same MIB
- * tree as a fresh build, for every step of a sequence of module lists.
+ * Checks that rebuilding the MIB tree with the MIB cache (patches/0004)
+ * gives the same tree as without it, for every step of a sequence of
+ * module lists.
  *
  * Input lines: MIBDIRS <TAB> MIBS (module list, "-" for none) <TAB>
  * modules loaded on demand afterwards (":" separated, "-" for none).
+ * Every step rebuilds the tree (shutdown_mib(), init_mib()).
  *
  * Build, after ./configure (which builds the bundled Net-SNMP):
- *   cc -O2 -Inetsnmp-build/include -I. -o mib-switch-check \
- *      tools/mib-switch-check.c php_snmp_mib.c netsnmp-build/lib/libnetsnmp.a \
+ *   cc -O2 -Inetsnmp-build/include -o mib-cache-check \
+ *      tools/mib-cache-check.c netsnmp-build/lib/libnetsnmp.a \
  *      -lssl -lcrypto -lm
  *
  * Run both modes and compare the hashes, which cover every node (OID,
  * label, owning modules, type, access, status, textual convention, hint,
  * units, enums, ranges, indexes, augments, varbinds) and which node a
  * lookup by name finds:
- *   ./mib-switch-check fresh SEQ > fresh.txt
- *   ./mib-switch-check incr SEQ > incr.txt
- *   paste -d' ' fresh.txt incr.txt | awk '$2 != $5 { print "step", $1, "differs" }'
- * Output per step: "step hash switched_in_place". With a step number as
- * third argument, the tree of that step is printed instead (diff those).
- * NODUMP=1 skips the dumps, for timing.
+ *   ./mib-cache-check fresh SEQ > fresh.txt
+ *   ./mib-cache-check cache SEQ > cache.txt
+ *   paste -d' ' fresh.txt cache.txt | awk '$2 != $4 { print "step", $1, "differs" }'
+ * Output per step: "step hash". With a step number as third argument, the
+ * tree of that step is printed instead (diff those). NODUMP=1 skips the
+ * dumps, for timing.
  *
  * Sibling order and the numbers in anonymous#N labels are left out: the
  * order of siblings only matters between siblings with the same subid
  * (kept), and the anonymous counter is never reset by Net-SNMP, so it
- * already differs between fresh builds in one process.
+ * already differs between rebuilds in one process.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,7 +37,6 @@
 #include <net-snmp/net-snmp-includes.h>
 #include <net-snmp/library/parse.h>
 
-#include "php_snmp_mib.h"
 
 static FILE *out;
 static uint64_t h;
@@ -157,7 +158,7 @@ int main(int argc, char **argv)
 {
 	char line[65536];
 	int step = 0, dumpstep = argc > 3 ? atoi(argv[3]) : -1;
-	int incr = strcmp(argv[1], "incr") == 0;
+	int cache = strcmp(argv[1], "cache") == 0;
 	FILE *f = fopen(argv[2], "r");
 
 	setenv("MIBS", "", 1);
@@ -170,12 +171,10 @@ int main(int argc, char **argv)
 		char *dirs = strtok(line, "\t\n");
 		char *mibs = strtok(NULL, "\t\n");
 		char *od = strtok(NULL, "\t\n");
-		bool in_place = false;
 		if (!mibs || !strcmp(mibs, "-")) mibs = "";
 		netsnmp_ds_set_string(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIBDIRS, dirs);
-		if (incr) {
-			in_place = php_snmp_mib_switch(mibs);
-		} else {
+		netsnmp_mib_cache_enable(cache);
+		{
 			char *saved = NULL;
 			shutdown_mib();
 			setenv("MIBS", mibs, 1);
@@ -190,7 +189,7 @@ int main(int argc, char **argv)
 		h = 1469598103934665603ULL;
 		out = (step == dumpstep) ? stdout : NULL;
 		if (!getenv("NODUMP")) dump();
-		if (dumpstep < 0) printf("%d %016llx %d\n", step, (unsigned long long) h, in_place);
+		if (dumpstep < 0) printf("%d %016llx\n", step, (unsigned long long) h);
 		if (step == dumpstep) break;
 		step++;
 	}

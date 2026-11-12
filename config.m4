@@ -93,7 +93,7 @@ if test "$PHP_SNMP" != "no"; then
   CFLAGS=$CFLAGS_SAVE
   LIBS=$LIBS_SAVE
 
-  PHP_NEW_EXTENSION([snmp], [snmp.c php_snmp_mib.c], [$ext_shared])
+  PHP_NEW_EXTENSION([snmp], [snmp.c], [$ext_shared])
   PHP_ADD_EXTENSION_DEP(snmp, spl)
   PHP_ADD_MAKEFILE_FRAGMENT
   PHP_SUBST([SNMP_SHARED_LIBADD])
