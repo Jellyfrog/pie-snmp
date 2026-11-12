@@ -1,0 +1,72 @@
+From 0e147dbd7051a2c40e66c1486cf704ba8d09d018 Mon Sep 17 00:00:00 2001
+From: Jellyfrog <Jellyfrog@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 20:08:51 +0100
+Subject: [PATCH] libsnmp: Free the MIB tree in one pass in unload_all_mibs()
+
+unload_all_mibs() called unload_module_by_ID() for every module in
+module_head, and each call walks the whole tree. module_head holds
+every module found in the MIB directories, not only the loaded ones, so
+unloading took O(modules * tree nodes). With the LibreNMS MIB
+directories (700+ files) this was a quarter of the time spent in
+shutdown_mib() + netsnmp_init_mib() when reloading MIBs.
+
+Everything is unloaded, so free the whole tree in a single walk instead.
+The hash buckets pointing into the tree are already cleared afterwards.
+---
+ snmplib/parse.c | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index 7f497e0a2..9ba01f6a1 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -913,6 +913,24 @@ free_tree(struct tree *Tree)
+     free(Tree);
+ }
+ 
++/*
++ * free a tree node, its peers and all their children
++ */
++static void
++free_tree_list(struct tree *tp)
++{
++    struct tree    *next;
++
++    for (; tp; tp = next) {
++        next = tp->next_peer;
++        free_tree_list(tp->child_list);
++        free_partial_tree(tp, FALSE);
++        if (tp->module_list != &tp->modid)
++            free(tp->module_list);
++        free(tp);
++    }
++}
++
+ static void
+ free_node(struct node *np)
+ {
+@@ -4688,16 +4706,18 @@ unload_all_mibs(void)
+                 free(mi);
+         }
+ 
+-        unload_module_by_ID(mp->modid, tree_head);
+         module_head = mp->next;
+         free(mp->name);
+         free(mp->file);
+         free(mp);
+     }
+-    unload_module_by_ID(-1, tree_head);
+     /*
+-     * tree nodes are cleared 
++     * All modules are unloaded, so free the whole tree at once instead of
++     * walking it once per module with unload_module_by_ID(). The hash
++     * buckets that point into the tree are cleared below.
+      */
++    free_tree_list(tree_head);
++    tree_head = NULL;
+ 
+     for (i = 0, ptc = tclist; i < tc_alloc; i++, ptc++) {
+         if (ptc->type == 0)
+-- 
+2.56.0
+
