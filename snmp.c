@@ -1983,15 +1983,14 @@ static zend_string *php_snmp_translate_oid(const zend_string *object_id)
 		mib_needs_reset = 1;
 	}
 
+	/* An OID that cannot be translated is not an error: return NULL (false)
+	 * without a warning, like snmptranslate's exit status. */
 	if (!snmp_parse_oid(ZSTR_VAL(object_id), name, &name_length)) {
-		php_error_docref(NULL, E_WARNING, "Invalid object identifier: %s", ZSTR_VAL(object_id));
 		return NULL;
 	}
 
 	if (sprint_realloc_objid(&buf, &buf_len, &out_len, 1, name, name_length)) {
 		result = zend_string_init((char *) buf, out_len, false);
-	} else {
-		php_error_docref(NULL, E_WARNING, "Could not print object identifier: %s", ZSTR_VAL(object_id));
 	}
 	free(buf);
 

@@ -4,15 +4,15 @@ snmp_init_mib() with a list of modules
 snmp
 --SKIPIF--
 <?php
-if (@snmp_translate('HOST-RESOURCES-MIB::hrSystemUptime.0', Snmp\OidOutput::Numeric) === false) die('skip default MIBs not available');
+if (snmp_translate('HOST-RESOURCES-MIB::hrSystemUptime.0', Snmp\OidOutput::Numeric) === false) die('skip default MIBs not available');
 ?>
 --FILE--
 <?php
 function show(string $label): void {
     echo $label, ': ', json_encode([
-        @snmp_translate('sysDescr.0'),
-        @snmp_translate('ifDescr.1'),
-        @snmp_translate('hrSystemUptime.0'),
+        snmp_translate('sysDescr.0'),
+        snmp_translate('ifDescr.1'),
+        snmp_translate('hrSystemUptime.0'),
     ]), "\n";
 }
 

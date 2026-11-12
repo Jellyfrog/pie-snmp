@@ -4,7 +4,7 @@ snmp_translate()
 snmp
 --SKIPIF--
 <?php
-if (@snmp_translate('SNMPv2-MIB::sysDescr.0', Snmp\OidOutput::Numeric) !== '.1.3.6.1.2.1.1.1.0') die('skip SNMPv2-MIB not available');
+if (snmp_translate('SNMPv2-MIB::sysDescr.0', Snmp\OidOutput::Numeric) !== '.1.3.6.1.2.1.1.1.0') die('skip SNMPv2-MIB not available');
 ?>
 --FILE--
 <?php
@@ -63,8 +63,6 @@ string(10) "sysDescr.0"
 Global format restored
 string(18) ".1.3.6.1.2.1.1.1.0"
 Array keeps keys
-
-Warning: snmp_translate(): Invalid object identifier: NO-SUCH-MIB::foo in %s on line %d
 array(3) {
   ["a"]=>
   string(21) "SNMPv2-MIB::sysName.0"
@@ -74,7 +72,5 @@ array(3) {
   string(21) "SNMPv2-MIB::sysName.0"
 }
 Invalid
-
-Warning: snmp_translate(): Invalid object identifier: noSuchObjectAnywhere in %s on line %d
 bool(false)
 snmp_translate(): Argument #1 ($object_id) must contain only strings, int given

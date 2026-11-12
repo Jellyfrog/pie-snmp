@@ -6,7 +6,7 @@ snmp
 <?php
 snmp_init_mib(null, ['RFC1213-MIB', 'SNMPv2-MIB', 'IF-MIB', 'HOST-RESOURCES-MIB']);
 foreach (['RFC1213-MIB::ipForwarding.0', 'SNMPv2-MIB::sysORLastChange.0', 'IF-MIB::ifHCInOctets.1', 'HOST-RESOURCES-MIB::hrSystemUptime.0'] as $oid) {
-    if (@snmp_translate($oid, Snmp\OidOutput::Numeric) === false) die("skip $oid not available");
+    if (snmp_translate($oid, Snmp\OidOutput::Numeric) === false) die("skip $oid not available");
 }
 ?>
 --FILE--
@@ -28,10 +28,10 @@ $lists = [
 foreach ($lists as $list) {
     snmp_init_mib(null, $list);
     echo str_pad(implode(',', $list) ?: '(none)', 30), json_encode([
-        @snmp_translate('.1.3.6.1.2.1.1.1.0', Snmp\OidOutput::Module),
-        @snmp_translate('ifDescr.1'),
-        @snmp_translate('ifHCInOctets.1'),
-        @snmp_translate('hrSystemUptime.0'),
+        snmp_translate('.1.3.6.1.2.1.1.1.0', Snmp\OidOutput::Module),
+        snmp_translate('ifDescr.1'),
+        snmp_translate('ifHCInOctets.1'),
+        snmp_translate('hrSystemUptime.0'),
     ]), "\n";
 }
 ?>

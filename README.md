@@ -16,7 +16,7 @@ It also adds the following, which upstream does not have:
 | SHA-224 and SHA-384 SNMPv3 authentication | `"SHA224"`, `"SHA384"` in `setSecurity()` / `snmp3_*()` |
 | Don't apply MIB display hints (Net-SNMP `-Ih`) | `SNMP::$no_display_hint`, `Snmp\Output::NoDisplayHint` |
 | TCP transport | `tcp:host[:port]`, `tcp6:[addr][:port]` (and `udp:`, `udp6:`) in the hostname |
-| Translate OIDs with the loaded MIBs, no agent needed (like `snmptranslate -IR`) | `snmp_translate(array\|string $object_id, ?Snmp\OidOutput $format = null): array\|string\|false` |
+| Translate OIDs with the loaded MIBs, no agent needed (like `snmptranslate -IR`); `false`, without a warning, for an OID that cannot be translated | `snmp_translate(array\|string $object_id, ?Snmp\OidOutput $format = null): array\|string\|false` |
 | Build the MIB tree from a list of modules instead of the default list (like `-M`/`-m`) | `snmp_init_mib(?string $mibdirs = null, ?array $mibs = null)` |
 | Parse each MIB file once per process; rebuilding the tree replays parsed files | automatic (`patches/0004`) |
 | No SNMP work at PHP startup: Net-SNMP and the MIB tree are initialised on first use | automatic |
