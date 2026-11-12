@@ -22,21 +22,33 @@ It also adds the following, which upstream does not have:
 
 ## Install
 
-You need the Net-SNMP development files (`net-snmp-config`), and the
-bundled snmp extension must not also be loaded. On distributions that ship
-it as a separate package (e.g. Arch `php-snmp`, Debian `php8.5-snmp`),
-remove that package or disable its ini file first.
+Net-SNMP is bundled: `net-snmp/` is a git submodule (upstream master), and
+`./configure` builds it as a static, PIC library-only `libnetsnmp.a`, applies
+any `patches/*.patch` first, and links it into `snmp.so`. The Net-SNMP
+symbols are kept private to `snmp.so`. No system Net-SNMP package is needed;
+OpenSSL is still linked dynamically.
+
+Build dependencies: a C compiler, `make`, the PHP dev files (`phpize`) and
+the OpenSSL dev files (Debian/Ubuntu: `build-essential php8.5-dev libssl-dev`).
+The MIB files are not bundled; install them separately (e.g.
+`snmp-mibs-downloader` or `snmp`) if you use MIB names. The library looks in
+the standard places (`/usr/share/snmp/mibs`, `/etc/snmp/snmp.conf`).
+Extra Net-SNMP configure arguments can be passed in `NETSNMP_CONFIGURE_ARGS`.
+
+The snmp extension shipped with PHP must not also be loaded. On
+distributions that ship it as a separate package (e.g. Arch `php-snmp`,
+Debian `php8.5-snmp`), remove that package or disable its ini file first.
 
 ```sh
 pie repository:add vcs https://github.com/jellyfrog/pie-snmp
 pie install jellyfrog/snmp:dev-main
 ```
 
-To use a non-default Net-SNMP prefix: `pie install jellyfrog/snmp --with-snmp=/opt/net-snmp`.
-
 Manual build:
 
 ```sh
+git clone --recurse-submodules https://github.com/jellyfrog/pie-snmp
+cd pie-snmp
 phpize && ./configure && make
 php -d extension=$PWD/modules/snmp.so -m | grep snmp
 ```
