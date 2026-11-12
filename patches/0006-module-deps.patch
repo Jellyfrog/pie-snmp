@@ -1,0 +1,114 @@
+From 2fdf048906aaad9c582cab148b84d297481305e3 Mon Sep 17 00:00:00 2001
+From: Jellyfrog <Jellyfrog@users.noreply.github.com>
+Date: Thu, 12 Nov 2026 17:48:23 +0100
+Subject: [PATCH] libsnmp: Record the modules read for MODULE and SUPPORTS
+ clauses
+
+parse_compliance() and parse_capabilities() read the module named in a
+MODULE-COMPLIANCE MODULE clause or an AGENT-CAPABILITIES SUPPORTS
+clause, but unlike IMPORTS nothing records that dependency. Keep the
+ids of those modules in struct module (deps, no_deps), so that code
+that unloads modules can tell which modules a loaded module needs.
+---
+ include/net-snmp/library/parse.h |  6 ++++++
+ snmplib/parse.c                  | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/include/net-snmp/library/parse.h b/include/net-snmp/library/parse.h
+index 48b72077ea..c155fcc96f 100644
+--- a/include/net-snmp/library/parse.h
++++ b/include/net-snmp/library/parse.h
+@@ -136,6 +136,12 @@ SOFTWARE.
+          */
+         int             modid;  /* The index number of this module */
+         struct module  *next;   /* Linked list pointer */
++        /*
++         * Modules read because of a MODULE-COMPLIANCE MODULE or an
++         * AGENT-CAPABILITIES SUPPORTS clause, which IMPORTS does not list
++         */
++        int            *deps;
++        int             no_deps;
+     };
+ 
+     struct module_compatability {
+diff --git a/snmplib/parse.c b/snmplib/parse.c
+index b2b4d06c2b..2f9ccf661b 100644
+--- a/snmplib/parse.c
++++ b/snmplib/parse.c
+@@ -572,6 +572,7 @@ static struct node *parse_objectid(FILE *, char *);
+ static int      get_tc(const char *, int, int *, struct enum_list **,
+                        struct range_list **, char **);
+ static int      get_tc_index(const char *, int);
++static void     add_module_dep(int, int);
+ static struct enum_list *parse_enumlist(FILE *, struct enum_list **);
+ static struct range_list *parse_ranges(FILE * fp, struct range_list **);
+ static struct node *parse_asntype(FILE *, char *, int *, char *);
+@@ -2519,6 +2520,32 @@ get_tc(const char *descriptor,
+     return LABEL;
+ }
+ 
++/*
++ * Record that module modid read module dep (other than through IMPORTS)
++ */
++static void
++add_module_dep(int modid, int dep)
++{
++    struct module  *mp;
++    int            *deps, i;
++
++    if (dep < 0 || dep == modid)
++        return;
++    for (mp = module_head; mp; mp = mp->next)
++        if (mp->modid == modid)
++            break;
++    if (!mp)
++        return;
++    for (i = 0; i < mp->no_deps; i++)
++        if (mp->deps[i] == dep)
++            return;
++    deps = realloc(mp->deps, (mp->no_deps + 1) * sizeof(int));
++    if (!deps)
++        return;
++    deps[mp->no_deps++] = dep;
++    mp->deps = deps;
++}
++
+ /*
+  * return index into tclist of given TC descriptor
+  * return -1 if not found
+@@ -3683,6 +3710,7 @@ parse_compliance(FILE * fp, char *name)
+                     goto skip;
+                 }
+                 modid = which_module(token);
++                add_module_dep(current_module, modid);
+             }
+             type = get_token(fp, token, MAXTOKEN);
+         }
+@@ -3837,6 +3865,7 @@ parse_capabilities(FILE * fp, char *name)
+             goto skip;
+         }
+         modid = which_module(token);
++        add_module_dep(current_module, modid);
+         type = get_token(fp, token, MAXTOKEN);
+         if (type != INCLUDES) {
+             print_error("Expected INCLUDES", token, type);
+@@ -4693,6 +4722,8 @@ netsnmp_unload_module(const char *name)
+         free(mp->imports);
+     }
+     mp->imports = NULL;
++    SNMP_FREE(mp->deps);
++    mp->no_deps = 0;
+     /*
+      * Release the module's textual conventions, so that modules read later
+      * cannot resolve them. Nodes refer to them by index, so the entries
+@@ -4755,6 +4786,7 @@ unload_all_mibs(void)
+         module_head = mp->next;
+         free(mp->name);
+         free(mp->file);
++        free(mp->deps);
+         free(mp);
+     }
+     /*
+-- 
+2.56.0
+
