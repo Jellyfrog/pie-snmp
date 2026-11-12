@@ -6,7 +6,7 @@ for [PIE](https://github.com/php/pie). It builds on PHP 8.5 and newer.
 It includes the PHP 8.6 SNMP improvements: the `Snmp\OidOutput`,
 `Snmp\StringOutput`, `Snmp\Output` and `Snmp\Mib` enums,
 `snmp_set_output_option()`, `snmp_set_mib_option()`, `snmp_init_mib()`,
-AES-192/256 and the extra output properties.
+AES-192/256 (including the Cisco variants) and the extra output properties.
 
 It also adds the following, which upstream does not have:
 
@@ -17,6 +17,16 @@ It also adds the following, which upstream does not have:
 | Don't apply MIB display hints (Net-SNMP `-Ih`) | `SNMP::$no_display_hint`, `Snmp\Output::NoDisplayHint` |
 | TCP transport | `tcp:host[:port]`, `tcp6:[addr][:port]` (and `udp:`, `udp6:`) in the hostname |
 | Translate OIDs with the loaded MIBs, no agent needed (like `snmptranslate -IR`) | `snmp_translate(array\|string $object_id, ?Snmp\OidOutput $format = null): array\|string\|false` |
+| Build the MIB tree from a list of modules instead of the default list (like `-M`/`-m`) | `snmp_init_mib(?string $mibdirs = null, ?array $mibs = null)` |
+| Parse each MIB file once per process; rebuilding the tree replays parsed files | automatic (`patches/0004`) |
+| No SNMP work at PHP startup: Net-SNMP and the MIB tree are initialised on first use | automatic |
+
+SNMPv3 algorithms (`setSecurity()`, `snmp3_*()`):
+
+| | |
+|---|---|
+| Authentication | `MD5`, `SHA`, `SHA224`, `SHA256`, `SHA384`, `SHA512` |
+| Privacy | `DES`, `AES` (= `AES128`), `AES192`, `AES256`, `AES192C`, `AES256C` (Cisco key extension) |
 
 `phpversion('snmp')` returns `1.0.0`, not the PHP version. Use that, or
 `property_exists(SNMP::class, 'use_bulk')`, to detect this build.
