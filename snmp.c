@@ -32,6 +32,7 @@
 # define HAVE_ASPRINTF
 #endif
 #include "php_snmp.h"
+#include "php_snmp_mib.h"
 
 #include "zend_exceptions.h"
 #include "ext/spl/spl_exceptions.h"
@@ -117,25 +118,21 @@ static void php_snmp_setenv(const char *name, const char *value)
 
 /* Build a new MIB tree. mibs is the list of modules to load, like the MIBS
  * environment variable or the -m option of the command line tools; NULL loads
- * the default list (MIBS, snmp.conf, or the built-in list). */
+ * the default list (MIBS, snmp.conf, or the built-in list). A list reuses the
+ * modules of the current tree when that gives the same tree as a fresh build
+ * (see php_snmp_mib.c). */
 static void php_snmp_build_mib_tree(const char *mibs)
 {
-	char *saved = NULL;
-
-	shutdown_mib();
 	if (mibs) {
-		const char *env = getenv("MIBS");
-		saved = env ? strdup(env) : NULL;
-		php_snmp_setenv("MIBS", mibs);
-	}
+		php_snmp_mib_switch(mibs);
+	} else {
+		php_snmp_mib_forget();
+		shutdown_mib();
 #ifdef HAVE_NETSNMP_INIT_MIB
-	netsnmp_init_mib();
+		netsnmp_init_mib();
 #else
-	init_mib();
+		init_mib();
 #endif
-	if (mibs) {
-		php_snmp_setenv("MIBS", saved);
-		free(saved);
 	}
 	mib_tree_loaded = true;
 }
@@ -2965,6 +2962,7 @@ static PHP_RSHUTDOWN_FUNCTION(snmp)
 		shutdown_mib();
 		netsnmp_ds_set_string(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIBDIRS, NULL);
 		mib_tree_loaded = false;
+		php_snmp_mib_forget();
 		mib_needs_reset = 0;
 	}
 
