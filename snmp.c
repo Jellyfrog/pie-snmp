@@ -96,6 +96,25 @@ typedef struct snmp_session php_snmp_session;
 }
 
 static bool mib_needs_reset;
+
+/* The default MIB tree is built on first use, not in MINIT, so processes that
+ * load the extension but never use SNMP do not pay for parsing the MIBs. */
+static bool mib_tree_loaded;
+
+/* Build the default MIB tree (MIBS/MIBDIRS/MIBFILES, snmp.conf) if not done yet. */
+static void php_snmp_load_mib_tree(void)
+{
+	if (mib_tree_loaded) {
+		return;
+	}
+	shutdown_mib();
+#ifdef HAVE_NETSNMP_INIT_MIB
+	netsnmp_init_mib();
+#else
+	init_mib();
+#endif
+	mib_tree_loaded = true;
+}
 static php_snmp_object saved_snmp_settings;
 static int saved_mib_allow_underscores;
 static int saved_mib_comment_term;
@@ -1398,6 +1417,8 @@ static void php_snmp(INTERNAL_FUNCTION_PARAMETERS, int st, int version)
 	zend_string *security_level = NULL, *auth_protocol = NULL, *auth_passphrase = NULL;
 	zend_string *privacy_protocol = NULL, *privacy_passphrase = NULL;
 	bool use_orignames = 0, suffix_keys = 0;
+
+	php_snmp_load_mib_tree();
 	zend_long timeout = SNMP_DEFAULT_TIMEOUT;
 	zend_long retries = SNMP_DEFAULT_RETRIES;
 	struct objid_query objid_query;
@@ -1859,6 +1880,8 @@ PHP_FUNCTION(snmp_translate)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(format_object, SnmpOidOutput_ce)
 	ZEND_PARSE_PARAMETERS_END();
 
+	php_snmp_load_mib_tree();
+
 	if (oid_ht) {
 		zval *val;
 		ZEND_HASH_FOREACH_VAL(oid_ht, val) {
@@ -2021,6 +2044,7 @@ PHP_FUNCTION(snmp_read_mib)
 		RETURN_THROWS();
 	}
 
+	php_snmp_load_mib_tree();
 	mib_needs_reset = 1;
 	if (!read_mib(filename)) {
 		char *error = strerror(errno);
@@ -2053,6 +2077,7 @@ PHP_FUNCTION(snmp_init_mib)
 #else
 	init_mib();
 #endif
+	mib_tree_loaded = true;
 }
 /* }}} */
 
@@ -2660,7 +2685,34 @@ PHP_MINIT_FUNCTION(snmp)
 {
 	netsnmp_log_handler *logh;
 
+#ifndef PHP_WIN32
+	{
+		/* Initialise the library without loading any MIB modules or files;
+		 * php_snmp_load_mib_tree() loads them on first use with the
+		 * environment and snmp.conf exactly as they are now. */
+		char *mibs = getenv("MIBS"), *mibfiles = getenv("MIBFILES");
+		mibs = mibs ? strdup(mibs) : NULL;
+		mibfiles = mibfiles ? strdup(mibfiles) : NULL;
+		setenv("MIBS", "", 1);
+		unsetenv("MIBFILES");
+
+		init_snmp("snmpapp");
+
+		if (mibs) {
+			setenv("MIBS", mibs, 1);
+			free(mibs);
+		} else {
+			unsetenv("MIBS");
+		}
+		if (mibfiles) {
+			setenv("MIBFILES", mibfiles, 1);
+			free(mibfiles);
+		}
+	}
+#else
 	init_snmp("snmpapp");
+	mib_tree_loaded = true;
+#endif
 	/* net-snmp corrupts the CTYPE locale during initialization. */
 	zend_reset_lc_ctype_locale();
 
@@ -2741,13 +2793,11 @@ static PHP_RINIT_FUNCTION(snmp)
 static PHP_RSHUTDOWN_FUNCTION(snmp)
 {
 	if (mib_needs_reset) {
+		/* Back to the default MIB tree, rebuilt lazily by the next request that needs it. */
 		shutdown_mib();
 		netsnmp_ds_set_string(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIBDIRS, NULL);
-#ifdef HAVE_NETSNMP_INIT_MIB
-		netsnmp_init_mib();
-#else
-		init_mib();
-#endif
+		mib_tree_loaded = false;
+		mib_needs_reset = 0;
 	}
 
 	// Restore the output options
