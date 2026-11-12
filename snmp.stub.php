@@ -39,6 +39,13 @@ namespace
     const SNMP_OID_OUTPUT_NONE = UNKNOWN;
 
     /**
+     * The version of this build (LibreNMS' pie-snmp); not defined by the
+     * snmp extension bundled with PHP.
+     * @var string
+     * @cvalue PHP_SNMP_VERSION
+     */
+    const SNMP_LIBRENMS_VERSION = UNKNOWN;
+    /**
      * @var int
      * @cvalue SNMP_VALUE_LIBRARY
      */
