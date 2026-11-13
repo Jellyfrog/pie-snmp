@@ -15,6 +15,7 @@ It also adds the following, which upstream does not have:
 | Turn off GETBULK in walks (GETNEXT is used instead) | `SNMP::$use_bulk` (default `true`) |
 | SHA-224 and SHA-384 SNMPv3 authentication | `"SHA224"`, `"SHA384"` in `setSecurity()` / `snmp3_*()` |
 | Don't apply MIB display hints (Net-SNMP `-Ih`) | `SNMP::$no_display_hint`, `Snmp\Output::NoDisplayHint` |
+| Don't prefix values with "Wrong Type (should be …)" when the agent's type differs from the MIB (Net-SNMP `QUICKE_PRINT`; with `quick_print` this is the CLI's `-OQ`) | `SNMP::$quicke_print`, `Snmp\Output::QuickEPrint` |
 | TCP transport | `tcp:host[:port]`, `tcp6:[addr][:port]` (and `udp:`, `udp6:`) in the hostname |
 | Translate OIDs with the loaded MIBs, no agent needed (like `snmptranslate -IR`); `false`, without a warning, for an OID that cannot be translated | `snmp_translate(array\|string $object_id, ?Snmp\OidOutput $format = null): array\|string\|false` |
 | Build the MIB tree from a list of modules instead of the default list (like `-M`/`-m`) | `snmp_init_mib(?string $mibdirs = null, ?array $mibs = null)` |

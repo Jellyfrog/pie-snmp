@@ -114,6 +114,8 @@ object(SNMP)#%d (%d) {
   bool(false)
   ["no_display_hint"]=>
   bool(false)
+  ["quicke_print"]=>
+  bool(false)
   ["valueretrieval"]=>
   int(1)
   ["oid_output_format"]=>
@@ -155,6 +157,8 @@ object(SNMP)#%d (%d) {
   bool(false)
   ["no_display_hint"]=>
   bool(false)
+  ["quicke_print"]=>
+  bool(false)
   ["valueretrieval"]=>
   int(0)
   ["oid_output_format"]=>
@@ -195,6 +199,8 @@ object(SNMP)#%d (%d) {
   ["print_hex_text"]=>
   bool(false)
   ["no_display_hint"]=>
+  bool(false)
+  ["quicke_print"]=>
   bool(false)
   ["valueretrieval"]=>
   int(1)
@@ -241,6 +247,8 @@ object(SNMP)#%d (%d) {
   ["print_hex_text"]=>
   bool(false)
   ["no_display_hint"]=>
+  bool(false)
+  ["quicke_print"]=>
   bool(false)
   ["valueretrieval"]=>
   int(1)

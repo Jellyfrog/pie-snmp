@@ -1,5 +1,5 @@
 /* This is a generated file, edit snmp.stub.php instead.
- * Stub hash: 0a53fe812c50d43b5e6cc4a5c7a14ad0a32f12d7
+ * Stub hash: 3978605f3e324e245293be5ed15b61d0600314c8
  * Has decl header: yes */
 
 #include "zend_attributes.h"
@@ -513,6 +513,12 @@ static zend_class_entry *register_class_SNMP(void)
 	zend_declare_typed_property(class_entry, property_no_display_hint_name, &property_no_display_hint_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_BOOL));
 	zend_string_release_ex(property_no_display_hint_name, true);
 
+	zval property_quicke_print_default_value;
+	ZVAL_UNDEF(&property_quicke_print_default_value);
+	zend_string *property_quicke_print_name = zend_string_init("quicke_print", sizeof("quicke_print") - 1, true);
+	zend_declare_typed_property(class_entry, property_quicke_print_name, &property_quicke_print_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_BOOL));
+	zend_string_release_ex(property_quicke_print_name, true);
+
 	zval property_valueretrieval_default_value;
 	ZVAL_UNDEF(&property_valueretrieval_default_value);
 	zend_string *property_valueretrieval_name = zend_string_init("valueretrieval", sizeof("valueretrieval") - 1, true);
@@ -604,6 +610,8 @@ static zend_class_entry *register_class_Snmp_Output(void)
 	zend_enum_add_case_cstr(class_entry, "ExtendedIndex", NULL);
 
 	zend_enum_add_case_cstr(class_entry, "NoDisplayHint", NULL);
+
+	zend_enum_add_case_cstr(class_entry, "QuickEPrint", NULL);
 
 	return class_entry;
 }
