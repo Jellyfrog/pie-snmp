@@ -224,6 +224,7 @@ static void snmp_session_free(php_snmp_session **session) /* {{{ */
 		PHP_SNMP_SESSION_FREE(community);
 		PHP_SNMP_SESSION_FREE(securityName);
 		PHP_SNMP_SESSION_FREE(contextEngineID);
+		PHP_SNMP_SESSION_FREE(contextName);
 		efree(*session);
 		*session = NULL;
 	}
@@ -351,7 +352,7 @@ static void php_snmp_getvalue(struct variable_list *vars, zval *snmpval, int val
 				break;
 			}
 			 /* buffer is not long enough to hold full output, double it */
-			val_len *= 2;
+			val_len = (val_len < buflen ? buflen : val_len) * 2;
 		} else {
 			break;
 		}
@@ -819,6 +820,11 @@ static bool php_snmp_parse_oid(
 			objid_query->vars[objid_query->count].oid = ZSTR_VAL(tmp);
 			if (st & SNMP_CMD_SET) {
 				if (type_str) {
+					if (ZSTR_LEN(type_str) != 1) {
+						zend_argument_value_error(type_arg_num, "must be a single character");
+						php_free_objid_query(objid_query, oid_ht, value_ht, st);
+						return false;
+					}
 					pptr = ZSTR_VAL(type_str);
 					objid_query->vars[objid_query->count].type = *pptr;
 				} else if (type_ht) {
@@ -1026,8 +1032,8 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 			zend_argument_value_error(hostname_arg_num, "has a malformed IPv6 address, closing square bracket missing");
 			return false;
 		}
-	} else { /* IPv4 address */
-		if ((pptr = strchr(host_ptr, ':'))) {
+	} else { /* IPv4 address or hostname; after udp6:/tcp6:, also a bare IPv6 address */
+		if ((pptr = strchr(host_ptr, ':')) && !(force_ipv6 && strchr(pptr + 1, ':'))) {
 			char *pport = pptr + 1;
 			tmp_port = atoi(pport);
 			if (tmp_port < 0 || tmp_port > USHRT_MAX) {
@@ -1071,6 +1077,16 @@ static bool snmp_session_init(php_snmp_session **session_p, int version, zend_st
 			res++;
 			continue;
 		}
+#else
+		if ((*res)->sa_family != AF_INET) {
+			res++;
+			continue;
+		}
+		if (use_tcp) {
+			strcpy(session->peername, "tcp:");
+			pptr = session->peername + strlen(session->peername);
+		}
+		inet_ntop(AF_INET, &(((struct sockaddr_in*)(*res))->sin_addr), pptr, MAX_NAME_LEN - (pptr - session->peername));
 #endif
 		break;
 	}
@@ -1385,7 +1401,10 @@ static ZEND_ATTRIBUTE_NONNULL_ARGS(2) bool snmp_session_set_security(struct snmp
 
 	/* Setting contextName if specified */
 	if (contextName) {
-		session->contextName = ZSTR_VAL(contextName);
+		if (session->contextName) {
+			efree(session->contextName);
+		}
+		session->contextName = estrndup(ZSTR_VAL(contextName), ZSTR_LEN(contextName));
 		session->contextNameLen = ZSTR_LEN(contextName);
 	}
 
@@ -2304,6 +2323,7 @@ PHP_METHOD(SNMP, __construct)
 	}
 
 	if (!snmp_session_init(&(snmp_object->session), version, hostname, community, timeout, retries, 2, 4)) {
+		snmp_session_free(&(snmp_object->session));
 		return;
 	}
 	snmp_object->max_oids = 0;
@@ -2952,9 +2972,9 @@ static void php_snmp_save_request_options(void)
 	save_snmplib_output_options(&saved_snmp_settings);
 
 	// Save the MIB options
-	saved_mib_allow_underscores = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_PARSE_LABEL);
-	saved_mib_comment_term = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_COMMENT_TERM);
-	saved_mib_replace = netsnmp_ds_get_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_REPLACE);
+	saved_mib_allow_underscores = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_PARSE_LABEL);
+	saved_mib_comment_term = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_COMMENT_TERM);
+	saved_mib_replace = netsnmp_ds_get_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_REPLACE);
 }
 
 static PHP_RINIT_FUNCTION(snmp)
@@ -2986,9 +3006,9 @@ static PHP_RSHUTDOWN_FUNCTION(snmp)
 	set_snmplib_output_options(&saved_snmp_settings);
 
 	// Restore MIB options
-	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_PARSE_LABEL, saved_mib_allow_underscores);
-	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_COMMENT_TERM, saved_mib_comment_term);
-	netsnmp_ds_set_int(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_REPLACE, saved_mib_replace);
+	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_PARSE_LABEL, saved_mib_allow_underscores);
+	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_COMMENT_TERM, saved_mib_comment_term);
+	netsnmp_ds_set_boolean(NETSNMP_DS_LIBRARY_ID, NETSNMP_DS_LIB_MIB_REPLACE, saved_mib_replace);
 
 	return SUCCESS;
 }

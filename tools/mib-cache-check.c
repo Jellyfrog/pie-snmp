@@ -157,9 +157,19 @@ static void dump(void)
 int main(int argc, char **argv)
 {
 	char line[65536];
-	int step = 0, dumpstep = argc > 3 ? atoi(argv[3]) : -1;
-	int cache = strcmp(argv[1], "cache") == 0;
-	FILE *f = fopen(argv[2], "r");
+	int step = 0, dumpstep, cache;
+	FILE *f;
+
+	if (argc < 3) {
+		fprintf(stderr, "usage: %s fresh|cache SEQ [STEP]\n", argv[0]);
+		return 2;
+	}
+	dumpstep = argc > 3 ? atoi(argv[3]) : -1;
+	cache = strcmp(argv[1], "cache") == 0;
+	if (!(f = fopen(argv[2], "r"))) {
+		perror(argv[2]);
+		return 2;
+	}
 
 	setenv("MIBS", "", 1);
 	unsetenv("MIBFILES");

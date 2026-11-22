@@ -6,7 +6,8 @@
 #   SRCDIR    the extension source directory (contains net-snmp/ and patches/)
 #   BUILDDIR  where to build; the result is BUILDDIR/netsnmp-build
 #
-# Rebuilds only when the Net-SNMP source, the patches or this script change.
+# Rebuilds only when the Net-SNMP source, the patches, this script or
+# NETSNMP_CFLAGS/NETSNMP_CONFIGURE_ARGS change.
 
 set -eu
 
@@ -40,6 +41,8 @@ fingerprint=$(
         git -C "$netsnmp_src" rev-parse HEAD 2>/dev/null || echo no-git
         git -C "$netsnmp_src" status --porcelain --untracked-files=no 2>/dev/null || true
         cat "$0"
+        echo "CFLAGS=${NETSNMP_CFLAGS:-}"
+        echo "ARGS=${NETSNMP_CONFIGURE_ARGS:-}"
         for p in "$patchdir"/*.patch; do
             [ -f "$p" ] && cat "$p"
         done
