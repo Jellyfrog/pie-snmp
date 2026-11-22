@@ -22,6 +22,18 @@ if [ ! -f "$netsnmp_src/configure" ]; then
     exit 1
 fi
 
+# "git pull" and "git checkout" leave the submodule where it was. Warn when
+# it is not at the commit this tree records: the patches are made for that
+# commit, and a fix is dropped from them once that commit has it.
+if [ -e "$netsnmp_src/.git" ]; then
+    recorded=$(git -C "$srcdir" rev-parse -q --verify ":./net-snmp" 2>/dev/null || :)
+    checked_out=$(git -C "$netsnmp_src" rev-parse -q --verify HEAD 2>/dev/null || :)
+    if [ -n "$recorded" ] && [ -n "$checked_out" ] && [ "$recorded" != "$checked_out" ]; then
+        echo "warning: $netsnmp_src is at $checked_out, but this tree records $recorded" >&2
+        echo "warning: run: git submodule update --init, then ./configure again" >&2
+    fi
+fi
+
 # Fingerprint of everything that affects the build.
 fingerprint=$(
     {

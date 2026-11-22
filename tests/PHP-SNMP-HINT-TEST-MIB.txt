@@ -1,0 +1,21 @@
+PHP-SNMP-HINT-TEST-MIB DEFINITIONS ::= BEGIN
+
+-- For tests/snmp_display_hint_no_length.phpt. It has no IMPORTS, so it
+-- loads without the system MIBs. hintTestName is UCD-SNMP-MIB::extNames,
+-- which the agent serves for the exec HexTest line in tests/snmpd.conf.
+
+NoLengthHint ::= TEXTUAL-CONVENTION
+    DISPLAY-HINT "t"
+    STATUS       current
+    DESCRIPTION  "A DISPLAY-HINT without an octet length, like UTFString
+                 in EQLGROUP-MIB."
+    SYNTAX       OCTET STRING
+
+hintTestName OBJECT-TYPE
+    SYNTAX      NoLengthHint
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "UCD-SNMP-MIB::extNames, printed with NoLengthHint."
+    ::= { iso 3 6 1 4 1 2021 8 1 2 }
+
+END
